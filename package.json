@@ -12,7 +12,7 @@
     "url": "https://github.com/AlexCo1d/Hereby/issues"
   },
   "scripts": {
-    "clean": "rimraf dist/{css/*,js/*,images/*}",
+    "clean": "rimraf dist/*",
     "autoprefixer": "postcss -u autoprefixer -r dist/css/*.css",
     "scss": "sass src/scss:dist/css --style=compressed",
     "lint": "eslint src/js || true",
@@ -20,10 +20,11 @@
     "uglify": "mkdirp dist/js -p && uglifyjs src/js/*.js -m -c -o dist/js/main.min.js",
     "imagemin": "imagemin src/images/* -o dist/images",
     "serve": "browser-sync start --server --files \"dist/css/*.css, dist/js/*.js, **/*.html, !node_modules/**/*.html\"",
+    "build:html": "cpy index.html dist",
     "build:css": "run-s lint-scss scss autoprefixer",
     "build:js": "run-s lint uglify",
     "build:images": "run-s imagemin",
-    "build": "run-s build:*",
+    "build": "run-s clean build:html build:css build:js build:images",
     "watch:css": "onchange \"src/scss\" -- run-s build:css",
     "watch:js": "onchange \"src/js\" -- run-s build:js",
     "watch:images": "onchange \"src/images\" -- run-s build:images",
@@ -32,6 +33,7 @@
   "devDependencies": {
     "autoprefixer": "^9.0.1",
     "browser-sync": "^2.12.8",
+    "cpy-cli": "^6.0.0",
     "eslint": "^5.2.0",
     "eslint-config-standard": "^12.0.0",
     "eslint-plugin-import": "^2.14.0",

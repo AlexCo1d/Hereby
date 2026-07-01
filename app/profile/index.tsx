@@ -25,6 +25,8 @@ export default function ProfileScreen() {
   const updateProfile = useAuth((s) => s.updateProfile);
   const addCustomTag = useAuth((s) => s.addCustomTag);
   const removeCustomTag = useAuth((s) => s.removeCustomTag);
+  const setTagLevel = useAuth((s) => s.setTagLevel);
+  const tagLevels = useAuth((s) => s.user?.tagLevels ?? {});
   const logout = useAuth((s) => s.logout);
   const insets = useSafeAreaInsets();
 
@@ -168,6 +170,8 @@ export default function ProfileScreen() {
             customTags={user.customTags}
             onAddCustomTag={addCustomTag}
             onRemoveCustomTag={removeCustomTag}
+            tagLevels={tagLevels}
+            onSetTagLevel={setTagLevel}
           />
         </Section>
 

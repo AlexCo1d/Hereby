@@ -12,7 +12,9 @@ export default function InterestsScreen() {
   const finishOnboarding = useAuth((s) => s.finishOnboarding);
   const addCustomTag = useAuth((s) => s.addCustomTag);
   const removeCustomTag = useAuth((s) => s.removeCustomTag);
+  const setTagLevel = useAuth((s) => s.setTagLevel);
   const customTags = useAuth((s) => s.user?.customTags ?? []);
+  const tagLevels = useAuth((s) => s.user?.tagLevels ?? {});
   const existingInterests = useAuth((s) => s.user?.interestIds ?? []);
 
   // Seed from whatever the user already had (so navigating back here, or
@@ -60,6 +62,8 @@ export default function InterestsScreen() {
               customTags={customTags}
               onAddCustomTag={addCustomTag}
               onRemoveCustomTag={removeCustomTag}
+              tagLevels={tagLevels}
+              onSetTagLevel={setTagLevel}
             />
           </View>
         </ScrollView>

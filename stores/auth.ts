@@ -43,6 +43,10 @@ export type AuthUser = {
   customTags: string[];
   /** Preset interest ids the user picked during onboarding */
   interestIds: string[];
+  /** Per-tag skill level (1..4). Key = interest id (preset) or the custom-tag
+   *  label. Missing key ⇒ level 1 (beginner). Primary matching signal alongside
+   *  the tags themselves; mirrored to `users.tag_levels` (jsonb) in supabase. */
+  tagLevels: Record<string, number>;
   /** Local-area radius in miles chosen during onboarding (editable later) */
   radiusMiles: number;
   /** Center of the local-area circle. Undefined → fall back to a campus default. */
@@ -79,6 +83,8 @@ type AuthState = {
   updateProfile: (patch: Partial<Pick<AuthUser, "name" | "bio" | "avatarUrl" | "customTags" | "interestIds">>) => void;
   addCustomTag: (label: string) => void;
   removeCustomTag: (label: string) => void;
+  /** Set the skill level (1..4) for a tag key (interest id or custom label). */
+  setTagLevel: (key: string, level: number) => void;
   /** Update the local-area radius and/or its center point. */
   setAreaSettings: (patch: { radiusMiles?: number; centerLat?: number; centerLng?: number }) => void;
   /** Spec 0.7: record a rating the user just gave to someone. Updates the
@@ -106,6 +112,7 @@ function rowToAuthUser(email: string, id: string, row: any): AuthUser {
     mode: ALLOW_ANY_EMAIL || eduVerified ? "verified" : "browse_only",
     customTags: row?.custom_tags ?? [],
     interestIds: row?.interest_ids ?? [],
+    tagLevels: row?.tag_levels ?? {},
     radiusMiles: row?.radius_miles ?? 5,
     centerLat: row?.center_lat ?? undefined,
     centerLng: row?.center_lng ?? undefined,
@@ -198,6 +205,7 @@ export const useAuth = create<AuthState>()(
               mode: ALLOW_ANY_EMAIL || isEdu ? "verified" : "browse_only",
               customTags: [],
               interestIds: [],
+              tagLevels: {},
               radiusMiles: 5,
               bio: "",
               ratingReceived: 0,
@@ -305,8 +313,20 @@ export const useAuth = create<AuthState>()(
           const u = get().user;
           if (!u) return;
           const next = u.customTags.filter((t) => t !== label);
-          set({ user: { ...u, customTags: next } });
-          syncUserToDb({ custom_tags: next });
+          // Drop the tag's skill level too so the map doesn't accumulate orphans.
+          const nextLevels = { ...u.tagLevels };
+          delete nextLevels[label];
+          set({ user: { ...u, customTags: next, tagLevels: nextLevels } });
+          syncUserToDb({ custom_tags: next, tag_levels: nextLevels });
+        },
+
+        setTagLevel(key, level) {
+          const u = get().user;
+          if (!u) return;
+          const clamped = Math.min(4, Math.max(1, Math.round(level)));
+          const nextLevels = { ...u.tagLevels, [key]: clamped };
+          set({ user: { ...u, tagLevels: nextLevels } });
+          syncUserToDb({ tag_levels: nextLevels });
         },
 
         setAreaSettings(patch) {

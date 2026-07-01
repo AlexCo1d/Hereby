@@ -13,10 +13,10 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
-import { Avatar } from "../../components/common/Avatar";
 import { Stars } from "../../components/common/Stars";
 import { Button } from "../../components/common/Button";
 import { InterestPicker } from "../../components/common/InterestPicker";
+import { AvatarNameEditor } from "../../components/common/AvatarNameEditor";
 import { useAuth } from "../../stores/auth";
 import { colors } from "../../constants/theme";
 
@@ -31,6 +31,8 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
 
   const [bioDraft, setBioDraft] = useState(user?.bio ?? "");
+  const [nameDraft, setNameDraft] = useState(user?.name ?? "");
+  const [avatarDraft, setAvatarDraft] = useState(user?.avatarUrl ?? "");
   const [selectedInterests, setSelectedInterests] = useState<Set<string>>(
     new Set(user?.interestIds ?? []),
   );
@@ -50,7 +52,13 @@ export default function ProfileScreen() {
   };
 
   const save = () => {
+    if (nameDraft.trim().length < 2) {
+      Alert.alert("Add a name", "Enter a display name (at least 2 characters).");
+      return;
+    }
     updateProfile({
+      name: nameDraft.trim(),
+      avatarUrl: avatarDraft,
       bio: bioDraft,
       interestIds: Array.from(selectedInterests),
     });
@@ -99,20 +107,27 @@ export default function ProfileScreen() {
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
       >
-        {/* Identity card */}
+        {/* Identity card — editable avatar + name */}
         <View className="items-center pt-6 pb-4 px-5">
-          <Avatar uri={user.avatarUrl} size={88} ring />
+          <AvatarNameEditor
+            name={nameDraft}
+            avatarUrl={avatarDraft}
+            seed={user.email || user.id}
+            userId={user.id}
+            onChangeName={setNameDraft}
+            onChangeAvatar={setAvatarDraft}
+          />
+
           <View className="flex-row items-center mt-3">
-            <Text className="text-xl font-bold text-ink">{user.name}</Text>
             {verified ? (
-              <View className="ml-2 flex-row items-center bg-brand-100 rounded-full px-2 py-0.5">
+              <View className="flex-row items-center bg-brand-100 rounded-full px-2 py-0.5">
                 <Ionicons name="shield-checkmark" size={12} color={colors.brand} />
                 <Text className="text-[10px] font-semibold ml-1" style={{ color: colors.brand }}>
                   .edu verified
                 </Text>
               </View>
             ) : (
-              <View className="ml-2 flex-row items-center bg-surface-soft rounded-full px-2 py-0.5">
+              <View className="flex-row items-center bg-surface-soft rounded-full px-2 py-0.5">
                 <Ionicons name="eye-outline" size={12} color={colors.inkMuted} />
                 <Text className="text-[10px] font-semibold ml-1 text-ink-muted">browse-only</Text>
               </View>

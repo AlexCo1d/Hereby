@@ -12,6 +12,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { generatedAvatar } from "../services/avatar";
 
 const IS_SUPABASE = process.env.EXPO_PUBLIC_DATA_SOURCE === "supabase";
 
@@ -106,8 +107,10 @@ function rowToAuthUser(email: string, id: string, row: any): AuthUser {
   return {
     id,
     email,
-    name: row?.name ?? email.split("@")[0],
-    avatarUrl: row?.avatar_url || `https://i.pravatar.cc/200?u=${encodeURIComponent(email)}`,
+    // No email-prefix fallback — a blank name routes new users to onboarding
+    // where they set a real display name.
+    name: row?.name ?? "",
+    avatarUrl: row?.avatar_url || generatedAvatar(id),
     campusId: row?.campus_id ?? campusFromEmail(email),
     mode: ALLOW_ANY_EMAIL || eduVerified ? "verified" : "browse_only",
     customTags: row?.custom_tags ?? [],
@@ -193,14 +196,15 @@ export const useAuth = create<AuthState>()(
           // Mock OTP: any 6-digit code passes in dev. User id pinned to "me".
           if (!/^\d{6}$/.test(code)) throw new Error("Code must be 6 digits");
           const isEdu = EDU_RE.test(email);
-          const name = email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
           set({
             pendingEmail: null,
             user: {
               id: "me",
               email,
-              name,
-              avatarUrl: `https://i.pravatar.cc/200?u=${encodeURIComponent(email)}`,
+              // Blank name → onboarding's profile step collects a real one
+              // (no email-prefix usernames).
+              name: "",
+              avatarUrl: generatedAvatar(email),
               campusId: campusFromEmail(email),
               mode: ALLOW_ANY_EMAIL || isEdu ? "verified" : "browse_only",
               customTags: [],

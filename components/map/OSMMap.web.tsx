@@ -24,6 +24,10 @@ if (typeof document !== "undefined") {
   }
 }
 
+// Fallback viewport short-side (px) used before onLayout reports the real size,
+// so the ring + zoom are always sane even on the very first frame.
+const FALLBACK_MIN_DIM = 320;
+
 // Web-Mercator zoom level at which `miles` spans `pixelRadius` pixels at `lat`.
 function zoomForRadius(miles: number, lat: number, pixelRadius: number) {
   const meters = Math.max(1, miles * 1609.34);
@@ -38,12 +42,13 @@ export function OSMMap(props: OSMMapProps) {
   const [dims, setDims] = useState({ w: 0, h: 0 });
 
   const fixedMode = props.fixedRadiusMiles != null;
-  const pixelRadius = Math.min(dims.w, dims.h) * FIXED_RING_FRACTION;
+  const measured = Math.min(dims.w, dims.h);
+  // Always positive — falls back before layout so nothing is gated on timing.
+  const pixelRadius = (measured > 0 ? measured : FALLBACK_MIN_DIM) * FIXED_RING_FRACTION;
 
-  // Track what we last applied so a radius change re-zooms but a pan doesn't
-  // fight the user by snapping the center back.
   const prevRadiusRef = useRef<number | undefined>(undefined);
   const prevTokenRef = useRef<number | undefined>(undefined);
+  const prevPxRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,7 +73,7 @@ export function OSMMap(props: OSMMapProps) {
           .addTo(mapRef.current);
         overlayLayerRef.current = leaflet.layerGroup().addTo(mapRef.current);
         const initZoom = fixedMode
-          ? zoomForRadius(props.fixedRadiusMiles!, props.center.lat, pixelRadius || 140)
+          ? zoomForRadius(props.fixedRadiusMiles!, props.center.lat, pixelRadius)
           : props.spanDeg
             ? Math.round(14 - Math.log2(props.spanDeg / 0.04))
             : 13;
@@ -77,8 +82,9 @@ export function OSMMap(props: OSMMapProps) {
 
       const map = mapRef.current!;
       const overlays = overlayLayerRef.current!;
+      // Container may have been sized after creation; keep Leaflet in sync.
+      map.invalidateSize();
 
-      // (Re)bind gesture handlers each render so closures see latest callbacks.
       map.off("click");
       if (props.onMapPress) {
         const cb = props.onMapPress;
@@ -123,21 +129,20 @@ export function OSMMap(props: OSMMapProps) {
       });
 
       if (fixedMode) {
-        if (pixelRadius > 0) {
-          const z = zoomForRadius(props.fixedRadiusMiles!, props.center.lat, pixelRadius);
-          const radiusChanged = prevRadiusRef.current !== props.fixedRadiusMiles;
-          const tokenChanged = prevTokenRef.current !== props.recenterToken;
-          if (tokenChanged) {
-            // Fly to a searched / located point.
-            map.setView([props.center.lat, props.center.lng], z, { animate: true });
-          } else if (radiusChanged) {
-            // Radius slider moved → re-zoom around the CURRENT center (don't
-            // yank the map back to the prop center, which lags the pan).
-            map.setZoom(z);
-          }
-          prevRadiusRef.current = props.fixedRadiusMiles;
-          prevTokenRef.current = props.recenterToken;
+        const z = zoomForRadius(props.fixedRadiusMiles!, props.center.lat, pixelRadius);
+        const radiusChanged = prevRadiusRef.current !== props.fixedRadiusMiles;
+        const tokenChanged = prevTokenRef.current !== props.recenterToken;
+        const pxChanged = prevPxRef.current !== pixelRadius;
+        if (tokenChanged) {
+          map.setView([props.center.lat, props.center.lng], z, { animate: true });
+        } else if (radiusChanged || pxChanged) {
+          // Slider moved (or the viewport got measured) → re-zoom around the
+          // current center so the ring keeps representing the chosen mileage.
+          map.setZoom(z);
         }
+        prevRadiusRef.current = props.fixedRadiusMiles;
+        prevTokenRef.current = props.recenterToken;
+        prevPxRef.current = pixelRadius;
       } else if (props.spanDeg) {
         const desiredZoom = Math.round(14 - Math.log2(props.spanDeg / 0.04));
         map.setView([props.center.lat, props.center.lng], Math.max(3, Math.min(18, desiredZoom)));
@@ -182,7 +187,7 @@ export function OSMMap(props: OSMMapProps) {
         ref={containerRef}
         style={{ width: "100%", height: "100%", minHeight: 200, background: "#E8EEF2" }}
       />
-      {fixedMode && pixelRadius > 0 ? (
+      {fixedMode ? (
         <View
           pointerEvents="none"
           style={{

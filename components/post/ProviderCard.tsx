@@ -3,7 +3,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Avatar } from "../common/Avatar";
 import { colors } from "../../constants/theme";
 import type { Post, User } from "../../services/types";
-import { formatHourlyPrice } from "../../services/types";
+import { formatHourlyPrice, describeSkillRequirement } from "../../services/types";
 
 type Props = {
   post: Post;
@@ -64,6 +64,20 @@ export function ProviderCard({ post, author, onPress }: Props) {
               </Text>
             </View>
           ))}
+          {(() => {
+            const req = describeSkillRequirement(post);
+            return req ? (
+              <View
+                className="flex-row items-center rounded-md px-2 py-0.5 mr-2"
+                style={{ backgroundColor: "rgba(124,108,240,0.15)" }}
+              >
+                <Ionicons name="ribbon-outline" size={11} color={colors.accentPurple} />
+                <Text className="text-xs font-medium ml-1" style={{ color: colors.accentPurple }}>
+                  {req}
+                </Text>
+              </View>
+            ) : null;
+          })()}
         </View>
         <Text className="text-[11px] text-ink-muted mt-1">Posted {relativeTime(post.postedAt)}</Text>
       </View>

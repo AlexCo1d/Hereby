@@ -41,6 +41,12 @@
         {
           "locationWhenInUsePermission": "Hereby uses your location to center your local-area map and to verify check-ins."
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Hereby needs access to your photos so you can set a profile picture."
+        }
       ]
     ]
   }

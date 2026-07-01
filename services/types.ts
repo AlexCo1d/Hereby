@@ -100,6 +100,16 @@ export type PostKind = "offer" | "seek";
  */
 export type PostFormat = "one_on_one" | "activity" | "event";
 
+/**
+ * How a post's skill-level requirement is matched against a candidate's level
+ * for that activity (tag levels — see users.tag_levels, 1..4):
+ *   • any   — no requirement (default). Everyone qualifies.
+ *   • exact — candidate must be exactly `skillLevel`.
+ *   • min   — candidate must be `skillLevel` OR HIGHER (向上兼容).
+ *   • max   — candidate must be `skillLevel` OR LOWER (向下兼容).
+ */
+export type PostSkillMode = "any" | "exact" | "min" | "max";
+
 export type Post = {
   id: string;
   authorId: string;
@@ -126,6 +136,12 @@ export type Post = {
   priceCentsPerHour: number;
   /** Cancellation fee in integer cents. 0 in MVP (see FEE_POLICY_VERSION). */
   cancellationFeeCents?: number;
+  /** Skill-level requirement for joining (1..4, keyed to the activity). When
+   *  `skillMode` is "any" (or undefined) this is ignored. Used to match against
+   *  a candidate's tag level for the post's category/activity. */
+  skillLevel?: number;
+  /** How `skillLevel` is compared. Default "any" = no requirement. */
+  skillMode?: PostSkillMode;
   /** How many people total can join. 1 = solo / 1v1 service; >1 = group event
    *  (shows in the Events tab as well as on the Discover map). */
   seats: number;
@@ -448,6 +464,51 @@ export function postSearchSurface(p: {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+}
+
+// ---- Skill level helpers (shared UI + matching) ----
+export const SKILL_LEVELS = [
+  { level: 1, label: "Beginner" },
+  { level: 2, label: "Intermediate" },
+  { level: 3, label: "Advanced" },
+  { level: 4, label: "Expert" },
+] as const;
+
+export function skillLevelLabel(level?: number): string {
+  const l = Math.min(4, Math.max(1, level ?? 1));
+  return SKILL_LEVELS[l - 1].label;
+}
+
+/** Human sentence for a post's skill requirement (for cards / detail). Returns
+ *  null when there's no requirement. */
+export function describeSkillRequirement(
+  p: Pick<Post, "skillLevel" | "skillMode">,
+): string | null {
+  const mode = p.skillMode ?? "any";
+  if (mode === "any" || p.skillLevel == null) return null;
+  const label = skillLevelLabel(p.skillLevel);
+  switch (mode) {
+    case "exact":
+      return `${label} only`;
+    case "min":
+      return `${label} or higher`;
+    case "max":
+      return `${label} or lower`;
+  }
+}
+
+/** Does a candidate's level satisfy a post's requirement? `any`/undefined ⇒
+ *  always true. Used for the "you qualify" hint and (future) match filtering. */
+export function levelSatisfies(
+  p: Pick<Post, "skillLevel" | "skillMode">,
+  candidateLevel: number | undefined,
+): boolean {
+  const mode = p.skillMode ?? "any";
+  if (mode === "any" || p.skillLevel == null) return true;
+  const c = candidateLevel ?? 1;
+  if (mode === "exact") return c === p.skillLevel;
+  if (mode === "min") return c >= p.skillLevel;
+  return c <= p.skillLevel; // max
 }
 
 // ---- Display helpers shared across screens ----

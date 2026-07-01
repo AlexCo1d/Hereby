@@ -37,6 +37,8 @@ export type HerebyApi = {
         | "tags"
         | "priceCentsPerHour"
         | "cancellationFeeCents"
+        | "skillLevel"
+        | "skillMode"
         | "seats"
         | "startAt"
         | "endAt"

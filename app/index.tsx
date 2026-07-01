@@ -11,6 +11,6 @@ export default function Index() {
   const hasFinishedOnboarding = useAuth((s) => s.hasFinishedOnboarding);
 
   if (!user) return <Redirect href={"/(auth)/login" as any} />;
-  if (!hasFinishedOnboarding) return <Redirect href={"/(onboarding)/area" as any} />;
+  if (!hasFinishedOnboarding) return <Redirect href={"/(onboarding)/profile" as any} />;
   return <Redirect href={"/(tabs)/discover" as any} />;
 }

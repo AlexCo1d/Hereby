@@ -32,13 +32,14 @@ import { Tag } from "../../components/common/Tag";
 import { NumberStepper } from "../../components/common/NumberStepper";
 import { DateTimePickerField } from "../../components/common/DateTimePickerField";
 import { AddressAutocomplete } from "../../components/common/AddressAutocomplete";
+import { LocateButton } from "../../components/common/LocateButton";
 import { OSMMap } from "../../components/map/OSMMap";
 
 import { api } from "../../services/api";
 import { useAuth } from "../../stores/auth";
 import { UCF_CENTER } from "../../services/mock/data";
-import type { PostKind, PostFormat } from "../../services/types";
-import { MAX_POST_TAGS } from "../../services/types";
+import type { PostKind, PostFormat, PostSkillMode } from "../../services/types";
+import { MAX_POST_TAGS, SKILL_LEVELS, describeSkillRequirement } from "../../services/types";
 import { colors } from "../../constants/theme";
 
 const CATEGORIES = ["Tennis", "Gym", "UX/UI", "Coding", "Music", "Language", "Study", "Other"];
@@ -92,6 +93,11 @@ export default function NewPostScreen() {
     setTagDraft("");
   };
   const removeTag = (t: string) => setTags(tags.filter((x) => x !== t));
+  // Skill-level matching requirement (spec: leveled-tag matching). "any" = no
+  // requirement; otherwise skillLevel + mode (exact / min = up-compatible /
+  // max = down-compatible).
+  const [skillMode, setSkillMode] = useState<PostSkillMode>("any");
+  const [skillLevel, setSkillLevel] = useState(2);
   const [desc, setDesc] = useState("");
   const [startAt, setStartAt] = useState<Date>(defaultStart);
   const [durationMins, setDurationMins] = useState(60);
@@ -127,6 +133,8 @@ export default function NewPostScreen() {
       setFormat(p.format);
       setCategory(p.category);
       setTags(p.tags ?? []);
+      setSkillMode(p.skillMode ?? "any");
+      if (p.skillLevel) setSkillLevel(p.skillLevel);
       setTitle(p.title);
       setDesc(p.description ?? "");
       const s = new Date(p.startAt);
@@ -170,6 +178,8 @@ export default function NewPostScreen() {
         title: title.trim(),
         category,
         tags: tags.length > 0 ? tags : undefined,
+        skillMode,
+        skillLevel: skillMode === "any" ? undefined : skillLevel,
         description: desc.trim() || undefined,
         priceCentsPerHour: priceCents,
         cancellationFeeCents: feeCents,
@@ -402,6 +412,86 @@ export default function NewPostScreen() {
             Tags power search — add what people might look for: level, style, time of day, language.
           </Text>
 
+          {/* Skill level requirement — who can join, by ability. */}
+          <FieldLabel>Skill level</FieldLabel>
+          <View className="flex-row" style={{ gap: 6 }}>
+            {(
+              [
+                { value: "any", label: "Any" },
+                { value: "exact", label: "Exactly" },
+                { value: "min", label: "At least" },
+                { value: "max", label: "At most" },
+              ] as { value: PostSkillMode; label: string }[]
+            ).map((opt) => {
+              const active = skillMode === opt.value;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setSkillMode(opt.value)}
+                  style={{
+                    flex: 1,
+                    paddingVertical: 9,
+                    borderRadius: 10,
+                    borderWidth: 1.5,
+                    borderColor: active ? colors.brand : colors.line,
+                    backgroundColor: active ? "rgba(255,107,53,0.08)" : colors.surface,
+                    alignItems: "center",
+                  }}
+                >
+                  <Text
+                    className="text-xs font-bold"
+                    style={{ color: active ? colors.brand : colors.ink }}
+                  >
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          {skillMode !== "any" ? (
+            <View className="mt-3">
+              <View className="flex-row flex-wrap" style={{ gap: 8 }}>
+                {SKILL_LEVELS.map((l, i) => {
+                  const bg = [colors.brand, colors.accentYellow, colors.accentBlue, colors.accentPurple][i];
+                  const fg = i === 1 ? "#3D2E00" : "#FFFFFF";
+                  const on = skillLevel === l.level;
+                  return (
+                    <Pressable
+                      key={l.level}
+                      onPress={() => setSkillLevel(l.level)}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        backgroundColor: bg,
+                        borderRadius: 999,
+                        paddingHorizontal: 12,
+                        paddingVertical: 8,
+                        borderWidth: on ? 2 : 0,
+                        borderColor: "#FFFFFF",
+                        opacity: on ? 1 : 0.9,
+                      }}
+                    >
+                      <Text style={{ color: fg, fontWeight: "700", fontSize: 12 }}>
+                        {l.level}. {l.label}
+                      </Text>
+                      {on ? (
+                        <Ionicons name="checkmark-circle" size={15} color={fg} style={{ marginLeft: 6 }} />
+                      ) : null}
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Text className="text-[11px] mt-2 leading-4" style={{ color: colors.brand, fontWeight: "600" }}>
+                {describeSkillRequirement({ skillLevel, skillMode })} can join.
+              </Text>
+            </View>
+          ) : (
+            <Text className="text-[11px] text-ink-muted mt-1.5 leading-4">
+              Anyone can join, whatever their level. Pick a requirement to match by ability.
+            </Text>
+          )}
+
           {/* Title */}
           <FieldLabel>Title</FieldLabel>
           <Input
@@ -490,6 +580,15 @@ export default function NewPostScreen() {
             >
               <Ionicons name="location" size={28} color={colors.brand} />
             </View>
+            {/* Jump the pin to the user's current GPS position. */}
+            <LocateButton
+              bottom={10}
+              onLocate={(c) => {
+                setLocation(c);
+                setLocationLabel("Current location");
+                setRecenterToken((n) => n + 1);
+              }}
+            />
           </View>
           <Text className="text-[11px] text-ink-muted mt-1">
             Drag the map to fine-tune — the pin's exact spot is what we save.

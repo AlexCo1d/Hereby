@@ -10,12 +10,33 @@ import { Button } from "../../components/common/Button";
 import { OSMMap } from "../../components/map/OSMMap";
 import { api } from "../../services/api";
 import type { Post, User } from "../../services/types";
-import { formatHourlyPrice } from "../../services/types";
+import {
+  formatHourlyPrice,
+  describeSkillRequirement,
+  levelSatisfies,
+  skillLevelLabel,
+} from "../../services/types";
 import { useAuth } from "../../stores/auth";
+import { INTERESTS } from "../../services/mock/data";
 import { colors } from "../../constants/theme";
 
 function fmtTime(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+/** The viewer's skill level for a post's activity. Maps the post `category`
+ *  (e.g. "Tennis") to a preset interest id ("tennis") or a matching custom
+ *  tag, then reads the level. Undefined ⇒ treated as Beginner by the matcher. */
+function viewerLevelForPost(
+  tagLevels: Record<string, number> | undefined,
+  category: string,
+): number | undefined {
+  if (!tagLevels) return undefined;
+  const preset = INTERESTS.find((t) => t.label.toLowerCase() === category.toLowerCase());
+  if (preset && tagLevels[preset.id] != null) return tagLevels[preset.id];
+  // fall back to a custom tag matching the category label
+  const customKey = Object.keys(tagLevels).find((k) => k.toLowerCase() === category.toLowerCase());
+  return customKey ? tagLevels[customKey] : undefined;
 }
 
 export default function ProviderDetailScreen() {
@@ -230,6 +251,50 @@ export default function ProviderDetailScreen() {
               </View>
             </View>
           ) : null}
+
+          {/* Skill-level requirement + whether the viewer qualifies. */}
+          {(() => {
+            const req = describeSkillRequirement(post);
+            if (!req) return null;
+            const myLevel = viewerLevelForPost(me?.tagLevels, post.category);
+            const qualifies = levelSatisfies(post, myLevel);
+            return (
+              <View className="mt-4">
+                <Text className="text-sm font-semibold text-ink mb-2">Skill level:</Text>
+                <View className="flex-row items-center flex-wrap" style={{ gap: 8 }}>
+                  <View
+                    className="flex-row items-center rounded-full px-3 py-1"
+                    style={{ backgroundColor: "rgba(76,158,235,0.14)" }}
+                  >
+                    <Ionicons name="ribbon-outline" size={13} color={colors.accentBlue} />
+                    <Text className="text-xs font-semibold ml-1.5" style={{ color: colors.accentBlue }}>
+                      {req}
+                    </Text>
+                  </View>
+                  <View
+                    className="flex-row items-center rounded-full px-3 py-1"
+                    style={{
+                      backgroundColor: qualifies ? "rgba(62,194,143,0.15)" : "rgba(229,77,77,0.12)",
+                    }}
+                  >
+                    <Ionicons
+                      name={qualifies ? "checkmark-circle" : "alert-circle-outline"}
+                      size={13}
+                      color={qualifies ? "#138C5E" : "#B83232"}
+                    />
+                    <Text
+                      className="text-xs font-semibold ml-1.5"
+                      style={{ color: qualifies ? "#138C5E" : "#B83232" }}
+                    >
+                      {qualifies
+                        ? "You qualify"
+                        : `You're ${skillLevelLabel(myLevel)} — may not fit`}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })()}
 
           {post.cancellationFeeCents && post.cancellationFeeCents > 0 ? (
             <Text className="text-sm text-ink mt-3">

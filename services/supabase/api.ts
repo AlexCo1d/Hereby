@@ -46,6 +46,8 @@ function rowToPost(r: any): Post {
     tags: r.tags ?? [],
     priceCentsPerHour: r.price_cents_per_hour ?? 0,
     cancellationFeeCents: r.cancellation_fee_cents ?? 0,
+    skillLevel: r.skill_level ?? undefined,
+    skillMode: r.skill_mode ?? undefined,
     seats: r.seats,
     seatsTaken: r.seats_taken ?? 0,
     startAt: r.start_at,
@@ -75,6 +77,8 @@ function postToInsert(input: Omit<Post, "id" | "postedAt">) {
     tags: input.tags ?? [],
     price_cents_per_hour: input.priceCentsPerHour,
     cancellation_fee_cents: input.cancellationFeeCents ?? 0,
+    skill_level: input.skillLevel ?? null,
+    skill_mode: input.skillMode ?? "any",
     seats: input.seats,
     start_at: input.startAt,
     end_at: input.endAt,
@@ -134,6 +138,8 @@ export const supabaseApi: HerebyApi = {
     if (patch.tags !== undefined) row.tags = patch.tags;
     if (patch.priceCentsPerHour !== undefined) row.price_cents_per_hour = patch.priceCentsPerHour;
     if (patch.cancellationFeeCents !== undefined) row.cancellation_fee_cents = patch.cancellationFeeCents;
+    if (patch.skillLevel !== undefined) row.skill_level = patch.skillLevel;
+    if (patch.skillMode !== undefined) row.skill_mode = patch.skillMode;
     if (patch.seats !== undefined) row.seats = patch.seats;
     if (patch.startAt !== undefined) row.start_at = patch.startAt;
     if (patch.endAt !== undefined) row.end_at = patch.endAt;

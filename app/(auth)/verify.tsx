@@ -64,7 +64,7 @@ export default function VerifyScreen() {
       // Read the FRESH flag — verifyOtp updates hasFinishedOnboarding from the
       // user's DB row (supabase) so new accounts always hit onboarding.
       const onboarded = useAuth.getState().hasFinishedOnboarding;
-      router.replace(onboarded ? "/(tabs)/discover" : "/(onboarding)/area");
+      router.replace(onboarded ? "/(tabs)/discover" : "/(onboarding)/profile");
     } catch (e: any) {
       setError(e?.message ?? "Invalid or expired code");
       setDigits(Array(OTP_LENGTH).fill(""));

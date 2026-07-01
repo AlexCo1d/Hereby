@@ -8,6 +8,11 @@ import type { OSMMapProps } from "./OSMMap";
 import { FIXED_RING_FRACTION } from "./OSMMap";
 export type { OSMMapProps, MapMarkerSpec } from "./OSMMap";
 
+// Fallback viewport dims (px) before onLayout reports the real size, so the
+// ring + zoom are sane on the first frame and never gated on layout timing.
+const FALLBACK_MIN_DIM = 320;
+const FALLBACK_HEIGHT = 600;
+
 // latitudeDelta so a circle of `miles` shows as `pixelRadius` px in a viewport
 // `heightPx` tall. (1 deg latitude ≈ 111.32 km.)
 function latDeltaForRadius(miles: number, pixelRadius: number, heightPx: number) {
@@ -22,18 +27,16 @@ export function OSMMap(props: OSMMapProps) {
   const [dims, setDims] = useState({ w: 0, h: 0 });
 
   const fixedMode = props.fixedRadiusMiles != null;
-  const pixelRadius = Math.min(dims.w, dims.h) * FIXED_RING_FRACTION;
+  const measured = Math.min(dims.w, dims.h);
+  const pixelRadius = (measured > 0 ? measured : FALLBACK_MIN_DIM) * FIXED_RING_FRACTION;
+  const heightPx = dims.h > 0 ? dims.h : FALLBACK_HEIGHT;
 
-  // Legacy mode span; fixed mode derives its own delta from the viewport.
   const legacySpan = props.spanDeg ?? 0.04;
-  const fixedDelta =
-    fixedMode && dims.h > 0 && pixelRadius > 0
-      ? latDeltaForRadius(props.fixedRadiusMiles!, pixelRadius, dims.h)
-      : legacySpan;
+  const fixedDelta = latDeltaForRadius(props.fixedRadiusMiles ?? 5, pixelRadius, heightPx);
   const span = fixedMode ? fixedDelta : legacySpan;
 
-  // Re-animate on radius/recenter change. Skip the very first render so we
-  // don't double-animate over initialRegion.
+  // Animate on radius / recenter / measured-size change. Skip the very first
+  // render so we don't double-animate over initialRegion.
   const firstRenderRef = useRef(true);
   useEffect(() => {
     if (firstRenderRef.current) {
@@ -48,10 +51,12 @@ export function OSMMap(props: OSMMapProps) {
         latitudeDelta: span,
         longitudeDelta: span,
       },
-      350,
+      300,
     );
-    // In fixed mode, a radius change re-zooms; recenterToken flies to a point.
-    // Both are covered by animating to (center, span).
+    // Deliberately NOT depending on center — panning shouldn't re-animate and
+    // fight the user. Radius/slider (span), recenterToken (search/locate), and
+    // measured size are what should re-zoom; center is read fresh via closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.recenterToken, props.fixedRadiusMiles, span]);
 
   return (
@@ -122,8 +127,8 @@ export function OSMMap(props: OSMMapProps) {
         {props.children}
       </MapView>
 
-      {/* Fixed-size ring overlay (life-circle mode). */}
-      {fixedMode && pixelRadius > 0 ? (
+      {/* Fixed-size ring overlay (life-circle mode) — always rendered. */}
+      {fixedMode ? (
         <View
           pointerEvents="none"
           style={{

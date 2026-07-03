@@ -513,5 +513,3 @@ function LevelLegend() {
     </View>
   );
 }
-
-export { MAX_CUSTOM_TAGS };

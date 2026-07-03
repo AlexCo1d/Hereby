@@ -1,4 +1,4 @@
-// Card used by the Events tab (group activities — Posts with seats >= 2).
+// Card used by the Events tab (group activities — Posts whose format is not one_on_one).
 // Renders a hero image, title, host, time, location, and a seats badge.
 // Tapping the card opens the same provider/[id] detail screen as a 1v1
 // post — same data model, so one detail screen handles both.
@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { Avatar } from "../common/Avatar";
 import { colors } from "../../constants/theme";
+import { categoryVisual } from "../../services/categoryVisuals";
 import type { Post, User } from "../../services/types";
 
 type Props = {
@@ -50,25 +51,14 @@ export function EventCard({ post, host, onPress, joined }: Props) {
       }}
     >
       <View style={{ position: "relative" }}>
-        {post.coverImageUrl ? (
-          <Image
-            source={{ uri: post.coverImageUrl }}
-            style={{ width: "100%", height: 140 }}
-            contentFit="cover"
-          />
-        ) : (
-          <View
-            style={{
-              width: "100%",
-              height: 140,
-              backgroundColor: colors.surfaceSoft,
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <Ionicons name="people-outline" size={36} color={colors.inkMuted} />
-          </View>
-        )}
+        {/* Every post gets a picture: its own cover if set, otherwise a
+            category-appropriate stock photo (basketball → hoops, tennis →
+            court, …) so the Events list is never a wall of gray placeholders. */}
+        <Image
+          source={{ uri: post.coverImageUrl || categoryVisual(post).image }}
+          style={{ width: "100%", height: 140 }}
+          contentFit="cover"
+        />
         {/* Format chip — distinguishes a casual Activity from an organized
             Event at a glance (top-left of the cover). */}
         {post.format === "activity" || post.format === "event" ? (

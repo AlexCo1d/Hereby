@@ -31,7 +31,13 @@ memory file `hereby_product_spec.md`). The 0.x section numbers below refer to it
 | State | Zustand (`stores/auth.ts`), persisted to AsyncStorage |
 | Maps | OSM tiles. Native: `react-native-maps`. Web: Leaflet. Geocoding: Nominatim (OSM) — **no key needed** |
 | Backend | Supabase (Postgres + Auth + Storage). Client: `@supabase/supabase-js` |
+| Photos | `expo-image-picker` (avatar upload) → Supabase Storage `avatars` bucket. Lazy-required — the app falls back to generated avatars if it's not installed |
 | Data source switch | `EXPO_PUBLIC_DATA_SOURCE` = `mock` (default) or `supabase` |
+
+> **After any `git pull` or machine switch: `npm install` first.** New native deps
+> (e.g. `expo-image-picker`) live in `package.json` + `app.json` plugins; if they're
+> not installed you get `PluginError: Failed to resolve plugin for module "…"`.
+> `npx expo install <pkg>` picks the SDK-correct version.
 
 ### Environment variables (`.env`, gitignored — copy from `.env.example`)
 ```
@@ -55,30 +61,35 @@ App/
 ├─ app/                      # expo-router screens (file = route)
 │  ├─ _layout.tsx            # root: auth gate + supabase session restore + mock auto-complete heartbeat
 │  ├─ index.tsx              # entry redirect (login / onboarding / tabs)
-│  ├─ (auth)/                # login.tsx, verify.tsx (OTP)
-│  ├─ (onboarding)/          # area.tsx (local-area picker), interests.tsx
+│  ├─ (auth)/                # login.tsx (email), verify.tsx (OTP; password path for supabase)
+│  ├─ (onboarding)/          # profile.tsx (avatar + name) → area.tsx (life-circle) → interests.tsx
 │  ├─ (tabs)/                # events, discover, chat, my  (+ _layout tab bar, in that order)
-│  ├─ provider/[id].tsx      # post detail ("I'll take that" / "I can help")
+│  ├─ provider/[id].tsx      # post detail ("I'll take that" / "I can help") + skill-req display
 │  ├─ order/[id].tsx         # order lifecycle: check-in cascade, cancel, no-show, dispute, rating
-│  ├─ post/new.tsx           # compose a post (kind/format/tags/time/seats/price/location)
+│  ├─ post/new.tsx           # compose (kind/format/tags/skill-req/time/seats/price/location + locate)
 │  ├─ chat/[id].tsx          # message thread
-│  ├─ profile/index.tsx      # profile + interest/tag manager
-│  └─ settings/area.tsx      # edit local area
+│  ├─ profile/index.tsx      # profile: avatar+name editor, interest/tag manager, ratings
+│  └─ settings/area.tsx      # edit local area (life-circle map)
 ├─ components/
-│  ├─ common/                # Button, Avatar, Tag, Stars, NumberStepper, DateTimePickerField,
-│  │                         #   FloatingPostButton, SearchableTagBar, AddressAutocomplete,
-│  │                         #   LocateButton, InterestPicker
+│  ├─ common/                # Button, Avatar, AvatarNameEditor, Tag, Stars, NumberStepper,
+│  │                         #   DateTimePickerField, FloatingPostButton, SearchableTagBar,
+│  │                         #   AddressAutocomplete, LocateButton, InterestPicker (w/ skill levels)
 │  ├─ map/                   # OSMMap.tsx (types+stub) / .web.tsx (Leaflet) / .native.tsx (RN Maps)
 │  └─ post/                  # ProviderCard, EventCard, OrderCard, MyPostCard, CheckInCard, RatingModal
 ├─ services/
 │  ├─ types.ts               # ALL domain types + helpers (formatHourlyPrice, canStillAppeal, …)
 │  ├─ api.ts                 # HerebyApi interface + data-source switch (mock vs supabase)
+│  ├─ avatar.ts              # generated-avatar + expo-image-picker→Storage upload helpers
 │  ├─ mock/                  # data.ts (seed) + index.ts (in-memory impl = the "reference backend")
 │  └─ supabase/              # client.ts + api.ts (HerebyApi against the SQL backend)
-├─ stores/auth.ts            # auth + profile state (mock + supabase branches)
+├─ stores/auth.ts            # auth + profile state (mock + supabase branches; tagLevels, name, avatar)
 ├─ supabase/
-│  ├─ migrations/0001_init.sql   # schema, RLS, views, triggers (place_order, orders_for_viewer, …)
-│  ├─ migrations/0002_rpcs.sql   # remaining RPCs (check-in, cancel, complete, dispute, chat, match score)
+│  ├─ migrations/0001_init.sql       # schema, RLS, views, triggers (place_order, orders_for_viewer, …)
+│  ├─ migrations/0002_rpcs.sql       # RPCs (check-in, cancel, complete, dispute, chat, match score)
+│  ├─ migrations/0003_onboarding.sql # users.onboarded flag (durable per-user onboarding)
+│  ├─ migrations/0004_tag_levels.sql # users.tag_levels jsonb (per-tag skill level 1-4)
+│  ├─ migrations/0005_skill_match.sql# posts.skill_level + skill_mode (matching requirement)
+│  ├─ migrations/0006_avatars.sql    # avatars Storage bucket + policies; new-user trigger update
 │  ├─ README.md / RUNBOOK.md
 ├─ constants/theme.ts
 ├─ API_CONTRACT.md           # per-endpoint contract + backend obligations
@@ -97,13 +108,26 @@ are a 1:1 port of it. `api.ts` is the seam; UI never imports mock or supabase di
 - **Auth** (`stores/auth.ts`): email OTP (supabase) or any-6-digits (mock); session
   restore; `.edu` → `verified` vs non-edu → `browse_only` (spec 0.5). Password
   sign-in path also exists for supabase (when OTP email isn't configured).
-- **Onboarding**: local-area picker (fixed "life-circle" ring + GPS locate +
-  address autocomplete) → interest/tag selection. Skippable with sane defaults.
+- **Onboarding**: 3 steps — **profile** (avatar + display name) → local-area picker
+  (fixed "life-circle" ring: the radius circle stays a constant on-screen size and
+  the map pans/zooms under it, driven by the radius slider; + GPS locate + address
+  autocomplete) → interest/tag selection. Skippable with sane defaults. The display
+  name is user-entered — **no more email-prefix usernames.**
+- **Avatar & name**: `AvatarNameEditor` (used in onboarding + profile). Photo upload
+  via `expo-image-picker` → Supabase Storage `avatars` bucket, plus a zero-dep
+  "Shuffle" generated avatar so identity always works even without the picker.
 - **Discover**: map + card feed, multi-tag fuzzy search with local history,
   **server-computed match score** (spec 0.8: tagMatch × distanceDecay × rating).
+- **Interest/tag skill levels**: every interest/custom tag carries a level
+  (1 Beginner / 2 Intermediate / 3 Advanced / 4 Expert), color-coded (orange /
+  yellow / blue / purple). Tap a selected tag → a level picker slides open; new
+  custom tags auto-open it. Persisted to `users.tag_levels` (jsonb). Default = 1.
 - **Posts**: `kind` = offer/seek (spec 0.1) × `format` = one_on_one/activity/event
   (spec 0.2.a — **NOT** inferred from seat count). Free-form `tags` (≤10), seats,
-  price (integer cents), time, map location. Create + edit.
+  price (integer cents), time, map location (with a "use current location" button).
+  **Skill requirement**: `skillLevel` (1-4) + `skillMode` (`any` / `exact` / `min` =
+  this-or-higher / `max` = this-or-lower) — the up/down-compatible matching filter,
+  shown on the post detail. Create + edit.
 - **Events tab**: `format != one_on_one`. "You're going" badge for joined posts.
 - **Orders** (`order/[id].tsx`): full lifecycle
   `upcoming → checking_in → in_progress → completed / no_show / cancelled`.
@@ -123,9 +147,11 @@ are a 1:1 port of it. `api.ts` is the seam; UI never imports mock or supabase di
 - **Profile**: editable bio, two rating scores, selected-only interest/tag manager
   with recommend+custom autocomplete.
 
-Backend: both migrations apply clean and the **full flow was executed end-to-end on
-a real Postgres** (signup→post→order→checkin→complete→rate→chat→no-show). `supabaseApi`
-implements **all 25** `HerebyApi` methods; every RPC it calls exists.
+Backend: migrations `0001`/`0002` were **executed end-to-end on a real Postgres**
+(signup→post→order→checkin→complete→rate→chat→no-show). `0003`–`0006` add the
+onboarding flag, tag levels, post skill-match columns, and the avatars bucket.
+`supabaseApi` implements **every** `HerebyApi` method; every RPC it calls exists.
+When you switch to supabase, run `supabase db push` so all six migrations apply.
 
 ---
 
@@ -195,9 +221,21 @@ implements **all 25** `HerebyApi` methods; every RPC it calls exists.
   so all users get the uniform 6-digit OTP. Editing templates needs custom SMTP on
   the free tier.
 
+**Dependencies / machine switches**
+- New native deps (currently `expo-image-picker`, `expo-location`) are declared in
+  `package.json` AND referenced as `app.json` plugins. After a `git pull` or moving
+  machines you MUST `npm install` before `npx expo start`, else Expo throws
+  `PluginError: Failed to resolve plugin for module "…"`. Use `npx expo install <pkg>`
+  to add native deps so the version matches the SDK. Run `npx expo start -c` once
+  after an `app.json` plugin change to clear the config cache.
+
 **Security**
 - A `sb_secret_…` key was pasted into chat during setup → it MUST be rotated in the
   dashboard. Only the publishable key belongs in the app.
+
+**Codebase hygiene**
+- No unused component files (every one is imported). Dead exports were pruned. If you
+  add a helper "for later", either wire it up or leave it unexported.
 
 ---
 
@@ -223,8 +261,11 @@ implements **all 25** `HerebyApi` methods; every RPC it calls exists.
 
 - **Mock (no backend):** `npm install && npx expo start`. Press `w`/`i`/`a`. Data is
   in-memory and resets on reload; you play both sides by tapping.
-- **Supabase:** set `.env` to supabase mode + keys, `supabase db push` (see
-  `supabase/RUNBOOK.md`), full reload (`r`). Cloud project already provisioned.
+- **Supabase:** set `.env` to supabase mode + keys, `supabase db push` (applies all
+  six migrations — see `supabase/RUNBOOK.md`), then `npx expo start -c`. Cloud project
+  already provisioned. Disable "Confirm email" in the dashboard for uniform 6-digit OTP.
+- **After `git pull` / new machine:** `npm install` → (supabase) `supabase db push` →
+  `npx expo start -c`.
 - **Always full-reload after changing `.env`** — Fast Refresh doesn't re-read env.
 
 > Legacy note: the parent folder `../Web/` is an **old standalone web prototype**,

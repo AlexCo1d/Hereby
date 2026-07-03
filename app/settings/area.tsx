@@ -94,7 +94,8 @@ export default function AreaSettingsScreen() {
         <View className="flex-1">
           <OSMMap
             center={center}
-            fixedRadiusMiles={radius}
+            radiusMiles={radius}
+            spanDeg={Math.max(0.03, radius * 0.05)}
             onRegionChange={(c) => {
               pendingRef.current = c;
             }}

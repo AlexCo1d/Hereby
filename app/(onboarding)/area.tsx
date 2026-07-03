@@ -69,11 +69,14 @@ export default function AreaScreen() {
           </Text>
         </View>
 
-        {/* Map + fixed pin */}
+        {/* Map + fixed pin. FB-Marketplace style: a real geographic orange
+            circle over a normal map; changing the slider grows/shrinks the
+            circle and re-frames the map to fit it. */}
         <View className="flex-1">
           <OSMMap
             center={center}
-            fixedRadiusMiles={radius}
+            radiusMiles={radius}
+            spanDeg={Math.max(0.03, radius * 0.05)}
             onRegionChange={(c) => {
               pendingRef.current = c;
             }}

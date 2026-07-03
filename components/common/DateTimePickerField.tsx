@@ -1,6 +1,11 @@
 // Native (iOS + Android) implementation. Tapping the field opens the OS-native
-// date and time pickers in sequence via @react-native-community/datetimepicker.
-// Web resolves DateTimePickerField.web.tsx instead.
+// pickers via @react-native-community/datetimepicker. Web resolves
+// DateTimePickerField.web.tsx instead.
+//
+// iOS: a single inline "datetime" spinner. The spinner fires onChange on every
+// tick as the user scrolls, so we must NOT unmount on the first event — we keep
+// it mounted and apply the full picked datetime, dismissing only on "Done".
+// Android: the OS shows a modal date picker, then we chain a time picker.
 import { useState } from "react";
 import { Pressable, Text, View, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -26,24 +31,36 @@ function fmt(d: Date) {
 export function DateTimePickerField({ value, onChange, minimumDate }: DateTimePickerFieldProps) {
   const [stage, setStage] = useState<"idle" | "date" | "time">("idle");
 
-  const onDate = (_: any, d?: Date) => {
-    setStage("idle");
+  // iOS: the datetime spinner reports the complete picked date; apply it as-is
+  // and keep the spinner mounted so scrolling isn't interrupted.
+  const onIosChange = (_: any, d?: Date) => {
     if (!d) return;
-    // Preserve the previously selected time when the user only changed the date.
+    const next = new Date(d);
+    next.setSeconds(0, 0);
+    onChange(next);
+  };
+
+  // Android date step: merge the picked day onto the current time, then chain
+  // the time picker.
+  const onAndroidDate = (event: any, d?: Date) => {
+    setStage("idle");
+    if (event?.type === "dismissed" || !d) return;
     const merged = new Date(value);
     merged.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
     onChange(merged);
-    // On Android the date picker dismisses after pick — open the time picker next.
-    if (Platform.OS === "android") setTimeout(() => setStage("time"), 0);
+    setTimeout(() => setStage("time"), 0);
   };
 
-  const onTime = (_: any, d?: Date) => {
+  // Android time step: merge the picked time onto the (already-updated) day.
+  const onAndroidTime = (event: any, d?: Date) => {
     setStage("idle");
-    if (!d) return;
+    if (event?.type === "dismissed" || !d) return;
     const merged = new Date(value);
     merged.setHours(d.getHours(), d.getMinutes(), 0, 0);
     onChange(merged);
   };
+
+  const isIos = Platform.OS === "ios";
 
   return (
     <View>
@@ -57,22 +74,36 @@ export function DateTimePickerField({ value, onChange, minimumDate }: DateTimePi
         <Ionicons name="chevron-down" size={16} color={colors.inkMuted} />
       </Pressable>
 
-      {stage === "date" ? (
-        <DateTimePicker
-          value={value}
-          mode={Platform.OS === "ios" ? "datetime" : "date"}
-          minimumDate={minimumDate}
-          onChange={Platform.OS === "ios" ? onTime : onDate}
-          display={Platform.OS === "ios" ? "spinner" : "default"}
-        />
+      {isIos && stage === "date" ? (
+        <View className="mt-2 bg-surface-soft rounded-xl">
+          <DateTimePicker
+            value={value}
+            mode="datetime"
+            minimumDate={minimumDate}
+            onChange={onIosChange}
+            display="spinner"
+          />
+          <Pressable
+            onPress={() => setStage("idle")}
+            className="items-center py-2.5 mx-4 mb-2 rounded-xl"
+            style={{ backgroundColor: colors.brand }}
+          >
+            <Text className="text-white text-sm font-semibold">Done</Text>
+          </Pressable>
+        </View>
       ) : null}
-      {stage === "time" ? (
+
+      {!isIos && stage === "date" ? (
         <DateTimePicker
           value={value}
-          mode="time"
-          onChange={onTime}
+          mode="date"
+          minimumDate={minimumDate}
+          onChange={onAndroidDate}
           display="default"
         />
+      ) : null}
+      {!isIos && stage === "time" ? (
+        <DateTimePicker value={value} mode="time" onChange={onAndroidTime} display="default" />
       ) : null}
     </View>
   );

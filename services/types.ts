@@ -435,6 +435,12 @@ export type DiscoverFilter = {
   onlyEvents?: boolean;
   /** Explicit format filter. Takes precedence over `onlyEvents` when set. */
   formats?: PostFormat[];
+  /** Skill-level facet. Empty/undefined = no filter. A post matches if it has
+   *  no skill requirement (skillMode "any"/undefined) OR its level is in the set. */
+  skillLevels?: number[];
+  /** Group-size facet, expressed as seat bounds (inclusive). */
+  minSeats?: number;
+  maxSeats?: number;
   /** Filter by `Post.kind`. Undefined returns both seeks and offers. */
   kind?: PostKind;
   /** Spec 0.8 — the viewer's interest tag ids. When provided, the backend

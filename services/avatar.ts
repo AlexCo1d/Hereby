@@ -26,10 +26,6 @@ function pickerModule(): any | null {
   }
 }
 
-export function isPhotoUploadAvailable(): boolean {
-  return pickerModule() != null;
-}
-
 /** Signals the picker package isn't installed — caller shows an install hint. */
 export const PICKER_UNAVAILABLE = "PICKER_UNAVAILABLE";
 
@@ -76,7 +72,18 @@ export async function pickAndUploadAvatar(userId: string): Promise<string | null
   const up = await supabase.storage
     .from("avatars")
     .upload(path, bytes, { contentType: "image/jpeg", upsert: true });
-  if (up.error) throw up.error;
+  if (up.error) {
+    // The `avatars` bucket + policies live in migration 0006. A "Bucket not
+    // found" here almost always means that migration hasn't been pushed to the
+    // live Supabase project — surface that instead of a raw storage error.
+    const msg = String(up.error.message ?? up.error);
+    if (/bucket not found/i.test(msg)) {
+      throw new Error(
+        "Avatar storage isn't set up on the server yet. Apply the Supabase migrations (0006_avatars) to create the `avatars` bucket, then try again.",
+      );
+    }
+    throw up.error;
+  }
   const { data } = supabase.storage.from("avatars").getPublicUrl(path);
   return data.publicUrl as string;
 }

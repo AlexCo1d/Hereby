@@ -137,6 +137,19 @@ export const USERS: User[] = [
     interests: ["tennis"],
     eduVerified: true,
   },
+  // ---- Test fixture: a virtual user actively asking for a tennis partner,
+  //      seeded so order-taking (接单) can be exercised without another device. ----
+  {
+    id: "u_test_sophia",
+    name: "Sophia Lee",
+    avatarUrl: "https://i.pravatar.cc/150?img=45",
+    level: "Level 3.0",
+    rating: 4.9,
+    ratingCount: 15,
+    bio: "3.0 tennis player looking for a hitting partner this week. Happy to rally or play practice sets.",
+    interests: ["tennis"],
+    eduVerified: true,
+  },
   // ---- "Host" pseudo-users seeded for the group events ----
   {
     id: "u_host_umc",
@@ -171,6 +184,31 @@ const nowMinus = (hours: number) => new Date(Date.now() - hours * 3600 * 1000).t
 const nowPlus = (hours: number) => new Date(Date.now() + hours * 3600 * 1000).toISOString();
 
 export const POSTS: Post[] = [
+  // Test fixture — a virtual user asking for a tennis partner, right at the
+  // default map center so it always shows up in Discover for order-taking tests.
+  {
+    id: "p_test_tennis_seek",
+    authorId: "u_test_sophia",
+    kind: "seek", // Sophia is the customer looking for a partner — you can take it
+    format: "one_on_one",
+    seats: 1,
+    title: "Looking for a tennis partner",
+    category: "Tennis",
+    tags: ["Tennis", "3.0 level", "hitting partner", "rally", "this week"],
+    description:
+      "3.0 tennis player looking for a hitting partner this week. Happy to rally or play practice sets — mornings or evenings work.",
+    priceCentsPerHour: 0, // Free
+    cancellationFeeCents: 0,
+    skillLevel: 3,
+    skillMode: "min",
+    startAt: nowPlus(6),
+    endAt: nowPlus(7.5),
+    location: UCF_CENTER,
+    locationName: "UCF Tennis Complex",
+    badges: ["Student"],
+    commentsCount: 0,
+    postedAt: nowMinus(0.5),
+  },
   {
     id: "p_jennie_tennis",
     authorId: "u_jennie",

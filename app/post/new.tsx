@@ -1,16 +1,17 @@
-// Compose a Post. After the v2 redesign:
-//   • The Seek/Offer kind is gone — every post is "I'm proposing X, want
-//     company". Whether it's a 1v1 service or a group event is conveyed by
-//     `seats` (>= 2 = event, also surfaces in the Events tab).
+// Compose a Post.
+//   • Kind (Offering / Looking for) and Format (one-on-one / activity / event)
+//     are both explicit choices — format is NOT derived from the seat count.
+//   • Category is free text and is the primary term matched against people's
+//     tags/interests; free-form tags widen the search surface.
 //   • Start time uses a real OS date+time picker (with HTML datetime-local on
 //     web), not preset chips.
 //   • Duration is a slider in 15-min increments up to 4h.
-//   • Seats is a +/- stepper.
+//   • Seats is a +/- stepper, shown only for group formats.
 //   • Location supports both pan-the-map and a Nominatim text search.
 //   • Matching mode is gone — both auto and manual paths are always allowed
 //     by the system; the UX detail of "who approves who" is handled later in
 //     the order flow, not at post time.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -28,7 +29,6 @@ import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { Button } from "../../components/common/Button";
-import { Tag } from "../../components/common/Tag";
 import { NumberStepper } from "../../components/common/NumberStepper";
 import { DateTimePickerField } from "../../components/common/DateTimePickerField";
 import { AddressAutocomplete } from "../../components/common/AddressAutocomplete";
@@ -37,12 +37,10 @@ import { OSMMap } from "../../components/map/OSMMap";
 
 import { api } from "../../services/api";
 import { useAuth } from "../../stores/auth";
-import { UCF_CENTER } from "../../services/mock/data";
+import { UCF_CENTER, INTERESTS } from "../../services/mock/data";
 import type { PostKind, PostFormat, PostSkillMode } from "../../services/types";
 import { MAX_POST_TAGS, SKILL_LEVELS, describeSkillRequirement } from "../../services/types";
 import { colors } from "../../constants/theme";
-
-const CATEGORIES = ["Tennis", "Gym", "UX/UI", "Coding", "Music", "Language", "Study", "Other"];
 
 // Round "now + 1h" to next half-hour as the default start.
 function defaultStart() {
@@ -72,7 +70,23 @@ export default function NewPostScreen() {
   // Format is explicit now (not seat-count derived). Changing it adjusts the
   // seats stepper: one_on_one locks to 1, group formats default to 2.
   const [format, setFormat] = useState<PostFormat>("one_on_one");
-  const [category, setCategory] = useState("Tennis");
+  // Free-text activity category (e.g. "Tennis", "Study group"). It's the
+  // primary matching term — it feeds the post's search surface and is matched
+  // against people's tags/interests. No fixed list; the user types their own,
+  // but we suggest from the shared interest universe so categories line up with
+  // the tags people actually carry (better matching).
+  const [category, setCategory] = useState("");
+  const categorySuggestions = useMemo(() => {
+    const q = category.trim().toLowerCase();
+    if (!q) return [];
+    const out: string[] = [];
+    for (const t of INTERESTS) {
+      if (t.label.toLowerCase() === q) continue; // already an exact match — hide
+      if (t.label.toLowerCase().includes(q)) out.push(t.label);
+      if (out.length >= 6) break;
+    }
+    return out;
+  }, [category]);
   const [tags, setTags] = useState<string[]>([]);
   const [tagDraft, setTagDraft] = useState("");
   const [title, setTitle] = useState("");
@@ -164,6 +178,10 @@ export default function NewPostScreen() {
       Alert.alert("Please add a title");
       return;
     }
+    if (!category.trim()) {
+      Alert.alert("Please add a category", "The category is what we match people on.");
+      return;
+    }
     if (!user) return;
     try {
       setSubmitting(true);
@@ -195,8 +213,13 @@ export default function NewPostScreen() {
         await api.createPost({ authorId: user.id, ...content });
       }
       router.back();
-    } catch {
-      Alert.alert(isEditing ? "Couldn't save" : "Couldn't post", "Please try again.");
+    } catch (e: any) {
+      // Surface the real backend error — a swallowed "Please try again" made it
+      // impossible to tell whether the post failed on validation, RLS, or the
+      // network. Prefer the Supabase/PostgREST message when present.
+      const msg =
+        e?.message || e?.error_description || e?.details || "Please try again.";
+      Alert.alert(isEditing ? "Couldn't save" : "Couldn't post", String(msg));
     } finally {
       setSubmitting(false);
     }
@@ -344,13 +367,39 @@ export default function NewPostScreen() {
                 : "An organized event you're hosting — workshop, volunteer day, tournament."}
           </Text>
 
-          {/* Category */}
+          {/* Category — free text with type-ahead suggestions from the shared
+              interest universe. Type your own or tap a suggestion. This is the
+              primary term matched against people's tags/interests. */}
           <FieldLabel>Category</FieldLabel>
-          <View className="flex-row flex-wrap" style={{ gap: 8 }}>
-            {CATEGORIES.map((c) => (
-              <Tag key={c} label={c} active={category === c} onPress={() => setCategory(c)} />
-            ))}
-          </View>
+          <Input
+            value={category}
+            onChangeText={setCategory}
+            placeholder="What's the activity? e.g. Tennis, Study group, Coding"
+          />
+          {categorySuggestions.length > 0 ? (
+            <View
+              className="mt-2 rounded-2xl overflow-hidden border"
+              style={{ borderColor: colors.line, backgroundColor: colors.surface }}
+            >
+              {categorySuggestions.map((label, i) => (
+                <Pressable
+                  key={label}
+                  onPress={() => setCategory(label)}
+                  className="flex-row items-center px-4 py-2.5"
+                  style={{
+                    borderBottomWidth: i < categorySuggestions.length - 1 ? 1 : 0,
+                    borderColor: colors.line,
+                  }}
+                >
+                  <Ionicons name="pricetag-outline" size={15} color={colors.brand} />
+                  <Text className="text-sm text-ink ml-2 flex-1">{label}</Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+          <Text className="text-[11px] text-ink-muted mt-1.5 leading-4">
+            This is what we match against people's interests — keep it short and clear.
+          </Text>
 
           {/* Free-form tags — the primary search surface. Up to MAX_POST_TAGS. */}
           <View className="flex-row items-center justify-between mt-5 mb-2">

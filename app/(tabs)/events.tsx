@@ -1,4 +1,4 @@
-// Events tab — group activities (Posts with seats >= 2).
+// Events tab — group activities (Posts whose format is not one_on_one).
 // Sources from the single Post table via `api.listPosts({ onlyEvents: true })`
 // so events and 1v1 posts share one schema. Tapping a card opens the same
 // provider/[id] detail screen used elsewhere.
@@ -10,8 +10,9 @@ import { router, useFocusEffect } from "expo-router";
 
 import { EventCard } from "../../components/post/EventCard";
 import { FloatingPostButton } from "../../components/common/FloatingPostButton";
+import { FilterSheet, FilterButton, FacetFilter, emptyFacets, countFacets, facetsToFilter } from "../../components/common/FilterSheet";
 import { api } from "../../services/api";
-import type { Post, User } from "../../services/types";
+import type { Post, User, PostFormat } from "../../services/types";
 import { colors } from "../../constants/theme";
 
 export default function EventsScreen() {
@@ -21,6 +22,8 @@ export default function EventsScreen() {
    *  drives the "You're going" badge on each EventCard. */
   const [joinedPostIds, setJoinedPostIds] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
+  const [facets, setFacets] = useState<FacetFilter>(emptyFacets);
+  const [filterOpen, setFilterOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
@@ -30,6 +33,7 @@ export default function EventsScreen() {
         api.listPosts({
           onlyEvents: true,
           query: query || undefined,
+          ...facetsToFilter(facets),
         }),
         api.listMyOrders(),
       ]);
@@ -48,7 +52,7 @@ export default function EventsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [query]);
+  }, [query, facets]);
 
   useEffect(() => {
     load();
@@ -85,10 +89,16 @@ export default function EventsScreen() {
             className="flex-1 ml-2 text-ink"
           />
         </View>
-        <Pressable className="p-1">
-          <Ionicons name="menu" size={24} color={colors.brand} />
-        </Pressable>
+        <FilterButton count={countFacets(facets)} onPress={() => setFilterOpen(true)} />
       </View>
+
+      <FilterSheet
+        visible={filterOpen}
+        value={facets}
+        onApply={setFacets}
+        onClose={() => setFilterOpen(false)}
+        formatOptions={["activity", "event"] as PostFormat[]}
+      />
 
       <ScrollView className="flex-1 px-4" contentContainerStyle={{ paddingBottom: 100 }}>
         {loading ? (

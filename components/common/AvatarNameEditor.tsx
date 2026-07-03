@@ -55,7 +55,7 @@ export function AvatarNameEditor({
   };
 
   return (
-    <View className="items-center">
+    <View className="items-center w-full">
       {/* Avatar with a camera badge */}
       <Pressable onPress={onUpload} disabled={busy}>
         <View>
@@ -119,7 +119,7 @@ export function AvatarNameEditor({
             onChangeText={onChangeName}
             placeholder="What should people call you?"
             placeholderTextColor={colors.inkMuted}
-            maxLength={30}
+            maxLength={20}
             style={{ flex: 1, marginLeft: 10, height: 52, paddingVertical: 0, color: colors.ink, fontSize: 16 }}
           />
         </View>

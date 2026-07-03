@@ -10,16 +10,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { View, ScrollView, Text, Pressable, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 import { router, useFocusEffect } from "expo-router";
 import { useCallback } from "react";
 
 import { SearchableTagBar } from "../../components/common/SearchableTagBar";
+import { FilterSheet, FilterButton, FacetFilter, emptyFacets, countFacets, facetsToFilter } from "../../components/common/FilterSheet";
 import { FloatingPostButton } from "../../components/common/FloatingPostButton";
 import { OSMMap, MapMarkerSpec } from "../../components/map/OSMMap";
 import { ProviderCard } from "../../components/post/ProviderCard";
 import { Avatar } from "../../components/common/Avatar";
 
 import { api } from "../../services/api";
+import { categoryVisual } from "../../services/categoryVisuals";
 import { UCF_CENTER, INTERESTS } from "../../services/mock/data";
 import type { Post, User } from "../../services/types";
 import { useAuth } from "../../stores/auth";
@@ -56,6 +59,8 @@ export default function DiscoverScreen() {
   );
 
   const [tags, setTags] = useState<string[]>([]);
+  const [facets, setFacets] = useState<FacetFilter>(emptyFacets);
+  const [filterOpen, setFilterOpen] = useState(false);
   const [posts, setPosts] = useState<Post[]>([]);
   const [users, setUsers] = useState<Record<string, User>>({});
   const [loading, setLoading] = useState(false);
@@ -86,6 +91,7 @@ export default function DiscoverScreen() {
         excludeAuthorId: myId,
         viewerInterestIds,
         useMatchScore: true,
+        ...facetsToFilter(facets),
       });
       setPosts(list);
       const lookup: Record<string, User> = {};
@@ -99,7 +105,7 @@ export default function DiscoverScreen() {
     } finally {
       setLoading(false);
     }
-  }, [tags, center, radiusMiles, myId, viewerInterestIds]);
+  }, [tags, facets, center, radiusMiles, myId, viewerInterestIds]);
 
   useEffect(() => {
     load();
@@ -121,29 +127,66 @@ export default function DiscoverScreen() {
     return Array.from(set);
   }, [posts]);
 
-  const markers: MapMarkerSpec[] = posts.map((p) => ({
-    id: p.id,
-    coordinate: p.location,
-    render: () => (
-      <View
-        style={{
-          backgroundColor: "white",
-          padding: 3,
-          borderRadius: 999,
-          borderWidth: 2,
-          borderColor: (p.seats ?? 1) >= 2 ? colors.accentBlue : colors.brand,
-        }}
-      >
-        <Avatar uri={users[p.authorId]?.avatarUrl ?? ""} size={28} />
-      </View>
-    ),
-    onPress: () => router.push(`/provider/${p.id}` as any),
-  }));
+  const markers: MapMarkerSpec[] = posts.map((p) => {
+    const accent = p.format !== "one_on_one" ? colors.accentBlue : colors.brand;
+    return {
+      id: p.id,
+      coordinate: p.location,
+      render: () => (
+        <View
+          style={{
+            backgroundColor: "white",
+            padding: 3,
+            borderRadius: 999,
+            borderWidth: 2,
+            borderColor: accent,
+          }}
+        >
+          <Avatar uri={users[p.authorId]?.avatarUrl ?? ""} size={28} />
+          {/* Clean category icon badge (basketball / tennis / …) so the map
+              reads at a glance without opening each pin. */}
+          <View
+            style={{
+              position: "absolute",
+              right: -3,
+              bottom: -3,
+              width: 18,
+              height: 18,
+              borderRadius: 9,
+              backgroundColor: accent,
+              alignItems: "center",
+              justifyContent: "center",
+              borderWidth: 1.5,
+              borderColor: "white",
+            }}
+          >
+            <Ionicons name={categoryVisual(p).icon} size={10} color="white" />
+          </View>
+        </View>
+      ),
+      onPress: () => router.push(`/provider/${p.id}` as any),
+    };
+  });
 
   return (
     <SafeAreaView className="flex-1 bg-surface" edges={["top"]}>
-      {/* Searchable filter bar (replaces the old static category tabs) */}
-      <SearchableTagBar allTags={tagUniverse} selected={tags} onChange={setTags} />
+      {/* Searchable filter bar (replaces the old static category tabs) with a
+          funnel button on the right for the facet filters. */}
+      <View style={{ flexDirection: "row", alignItems: "flex-start", zIndex: 10 }}>
+        <View style={{ flex: 1 }}>
+          <SearchableTagBar allTags={tagUniverse} selected={tags} onChange={setTags} />
+        </View>
+        <View style={{ paddingTop: 8, paddingRight: 12, paddingLeft: 4 }}>
+          <FilterButton count={countFacets(facets)} onPress={() => setFilterOpen(true)} />
+        </View>
+      </View>
+
+      <FilterSheet
+        visible={filterOpen}
+        value={facets}
+        onApply={setFacets}
+        onClose={() => setFilterOpen(false)}
+      />
 
       {/* Map fills the area; the card scroller floats over it with a
           transparent strip so the map shows through (more spacious look). */}

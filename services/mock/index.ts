@@ -42,6 +42,8 @@ function applyFilter<
     seats?: number;
     kind?: string;
     format?: string;
+    skillLevel?: number;
+    skillMode?: string;
   },
 >(list: T[], f?: DiscoverFilter): T[] {
   if (!f) return list;
@@ -87,6 +89,23 @@ function applyFilter<
   }
   if (f.kind) {
     out = out.filter((p) => p.kind === f.kind);
+  }
+  // Skill-level facet — forgiving: a post with no requirement (skillMode
+  // "any"/undefined) always passes; otherwise its level must be in the set.
+  if (f.skillLevels && f.skillLevels.length > 0) {
+    out = out.filter(
+      (p) =>
+        p.skillMode == null ||
+        p.skillMode === "any" ||
+        (p.skillLevel != null && f.skillLevels!.includes(p.skillLevel)),
+    );
+  }
+  // Group-size facet, via inclusive seat bounds.
+  if (f.minSeats != null) {
+    out = out.filter((p) => (p.seats ?? 1) >= f.minSeats!);
+  }
+  if (f.maxSeats != null) {
+    out = out.filter((p) => (p.seats ?? 1) <= f.maxSeats!);
   }
   return out;
 }

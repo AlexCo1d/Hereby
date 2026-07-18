@@ -5,23 +5,31 @@ import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { Avatar } from "../../components/common/Avatar";
+import { AvatarStack } from "../../components/common/AvatarStack";
 import { Stars } from "../../components/common/Stars";
 import { Button } from "../../components/common/Button";
 import { OSMMap } from "../../components/map/OSMMap";
+import { PublicNoteSheet } from "../../components/post/PublicNoteSheet";
 import { api } from "../../services/api";
 import type { Post, User } from "../../services/types";
 import {
-  formatHourlyPrice,
+  moneyBadge,
+  moneyExpectationLabel,
+  postKindMeta,
   describeSkillRequirement,
   levelSatisfies,
   skillLevelLabel,
+  dayPrefix,
+  groupAverageRating,
+  isGroupPost,
+  isPostIncoming,
 } from "../../services/types";
 import { useAuth } from "../../stores/auth";
 import { INTERESTS } from "../../services/mock/data";
 import { colors } from "../../constants/theme";
 
 function fmtTime(iso: string) {
-  return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
 /** The viewer's skill level for a post's activity. Maps the post `category`
@@ -40,7 +48,7 @@ function viewerLevelForPost(
 }
 
 export default function ProviderDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, note } = useLocalSearchParams<{ id: string; note?: string }>();
   const me = useAuth((s) => s.user);
   const [post, setPost] = useState<Post | null>(null);
   const [author, setAuthor] = useState<User | null>(null);
@@ -48,6 +56,13 @@ export default function ProviderDetailScreen() {
   /** The viewer's existing non-cancelled order for this post, if any.
    *  Drives the "already going" CTA + prevents double-orders. */
   const [existingOrderId, setExistingOrderId] = useState<string | null>(null);
+  const [noteOpen, setNoteOpen] = useState(false);
+
+  // Deep-link from a notification: /provider/[id]?note=<noteId> auto-opens the
+  // public-note sheet and highlights the reply we were notified about.
+  useEffect(() => {
+    if (note) setNoteOpen(true);
+  }, [note]);
 
   useEffect(() => {
     (async () => {
@@ -103,22 +118,6 @@ export default function ProviderDetailScreen() {
     }
   };
 
-  const onChat = async () => {
-    if (!post) return;
-    try {
-      // Open (or fetch) the 1:1 thread with the author/host and go straight
-      // into the conversation — not the chat list. For 1v1 posts without an
-      // order this throws (spec 0.9) and we explain why.
-      const thread = await api.openThreadWith({ withUserId: post.authorId, postId: post.id });
-      router.push(`/chat/${thread.id}` as any);
-    } catch (e: any) {
-      Alert.alert(
-        "Chat locked",
-        e?.message ?? "Place an order first to start chatting.",
-      );
-    }
-  };
-
   if (!post || !author) {
     return (
       <SafeAreaView className="flex-1 bg-surface" edges={["top"]}>
@@ -126,6 +125,14 @@ export default function ProviderDetailScreen() {
       </SafeAreaView>
     );
   }
+
+  const group = isGroupPost(post) && (post.participants?.length ?? 0) > 1;
+  const members = post.participants ?? [author];
+  // Group headline rating = average across joined members; 1-on-1 uses the
+  // single author's rating.
+  const ratingInfo = group
+    ? groupAverageRating(members)
+    : { rating: author.rating, count: author.ratingCount };
 
   return (
     <SafeAreaView className="flex-1 bg-surface" edges={["top"]}>
@@ -175,11 +182,19 @@ export default function ProviderDetailScreen() {
           }}
         >
           <View className="flex-row items-center">
-            <Avatar uri={author.avatarUrl} size={56} />
+            {group ? (
+              <AvatarStack users={members} size={48} max={4} />
+            ) : (
+              <Avatar uri={author.avatarUrl} size={56} />
+            )}
             <View className="flex-1 ml-3">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-lg font-bold text-ink">{author.name}</Text>
-                <Pressable className="flex-row items-center">
+              <View className="flex-row items-start justify-between">
+                {/* Headline is the activity title (shown in full) — the avatars
+                    already convey who's involved. */}
+                <Text className="text-lg font-bold text-ink flex-1 mr-2">
+                  {post.title}
+                </Text>
+                <Pressable className="flex-row items-center mt-1">
                   <Ionicons name="share-outline" size={16} color={colors.brand} />
                   <Text className="text-sm font-semibold ml-1" style={{ color: colors.brand }}>
                     Share
@@ -187,42 +202,52 @@ export default function ProviderDetailScreen() {
                 </Pressable>
               </View>
               <Text className="text-sm text-ink-muted mt-0.5">
-                {fmtTime(post.startAt)} - {fmtTime(post.endAt)}
+                {dayPrefix(post.startAt)} {fmtTime(post.startAt)} - {fmtTime(post.endAt)}
               </Text>
               <View className="flex-row items-center mt-1">
-                <Stars value={author.rating} size={14} />
-                <Text className="ml-2 text-sm font-semibold text-ink">{author.rating.toFixed(2)}</Text>
+                <Stars value={ratingInfo.rating} size={14} />
+                <Text className="ml-2 text-sm font-semibold text-ink">{ratingInfo.rating.toFixed(2)}</Text>
+                {group ? (
+                  <Text className="ml-1.5 text-xs text-ink-muted">group avg</Text>
+                ) : null}
               </View>
-              <Text className="text-base font-semibold mt-1" style={{ color: colors.accentBlue }}>
-                {formatHourlyPrice(post.priceCentsPerHour)}
-              </Text>
-              {/* Kind chip — clarifies whether author is hosting or looking. */}
-              <View
-                className="flex-row items-center self-start mt-1.5 px-2 py-0.5 rounded-full"
-                style={{
-                  backgroundColor:
-                    post.kind === "seek"
-                      ? "rgba(124,108,240,0.15)"
-                      : "rgba(255,107,53,0.12)",
-                }}
-              >
-                <Ionicons
-                  name={post.kind === "seek" ? "hand-right-outline" : "megaphone-outline"}
-                  size={11}
-                  color={post.kind === "seek" ? colors.accentPurple : colors.brand}
-                />
-                <Text
-                  style={{
-                    color: post.kind === "seek" ? colors.accentPurple : colors.brand,
-                    fontSize: 10,
-                    fontWeight: "700",
-                    marginLeft: 4,
-                    letterSpacing: 0.3,
-                  }}
-                >
-                  {post.kind === "seek" ? "LOOKING FOR" : "OFFERING"}
-                </Text>
-              </View>
+              {(() => {
+                const money = moneyBadge(post);
+                return (
+                  <View className="flex-row items-center mt-1">
+                    <Ionicons name={money.icon as any} size={15} color={money.color} />
+                    <Text
+                      className="text-base font-semibold ml-1"
+                      style={{ color: money.color }}
+                    >
+                      {moneyExpectationLabel(post)}
+                    </Text>
+                  </View>
+                );
+              })()}
+              {/* Kind chip — Offering / Looking for / Partnering. */}
+              {(() => {
+                const km = postKindMeta(post.kind);
+                return (
+                  <View
+                    className="flex-row items-center self-start mt-1.5 px-2 py-0.5 rounded-full"
+                    style={{ backgroundColor: km.color + "22" }}
+                  >
+                    <Ionicons name={km.icon as any} size={11} color={km.color} />
+                    <Text
+                      style={{
+                        color: km.color,
+                        fontSize: 10,
+                        fontWeight: "700",
+                        marginLeft: 4,
+                        letterSpacing: 0.3,
+                      }}
+                    >
+                      {km.short}
+                    </Text>
+                  </View>
+                );
+              })()}
             </View>
           </View>
 
@@ -336,27 +361,42 @@ export default function ProviderDetailScreen() {
             const full = (post.seatsTaken ?? 0) >= post.seats;
             const joined = !!existingOrderId;
             const isOwn = !!me && post.authorId === me.id;
-            // Four states for the right-hand button:
-            //   1. isOwn  → "Your post" disabled (Events tab doesn't filter
-            //              own posts; Discover does, but we still defend here)
-            //   2. joined → "View my order" jumps to the order detail
-            //   3. full   → "Full" disabled secondary
-            //   4. open   → "I'll take that!" primary
+            const pending = post.status === "pending";
+            const closed = post.status === "cancelled" || post.status === "completed";
+            // Already agreed by someone else (1-on-1 booking confirmed) →
+            // "Upcoming": locked to new joiners until it starts / frees up.
+            // Group activities are never incoming — they keep filling seats.
+            const incoming = isPostIncoming(post);
+            // Right-hand button states (first match wins):
+            //   1. isOwn   → "Your post" disabled (Events tab doesn't filter
+            //               own posts; Discover does, but we still defend here)
+            //   2. joined  → "View my order" jumps to the order detail
+            //   3. closed  → "Closed" disabled (author cancelled / no-response)
+            //   4. pending → "Pending" disabled — someone's take-request is
+            //               awaiting the author, so it's locked for others
+            //   5. full    → "Full" disabled secondary
+            //   6. open    → "I'll take that!" primary
             return (
               <View className="flex-row mt-4">
                 <Button
-                  label="Chat"
+                  label="Public note"
                   variant="primary"
                   className="flex-1 mr-2"
-                  onPress={onChat}
+                  onPress={() => setNoteOpen(true)}
                 />
                 {isOwn ? (
                   <Button
-                    label="Your post"
+                    // Own post: this now appears on Discover too. Tapping "My
+                    // Post" jumps straight into its order/check-in screen when
+                    // someone's already taken it; otherwise into the editor.
+                    label="My Post"
                     variant="secondary"
                     className="flex-1 ml-2"
-                    disabled
-                    onPress={() => {}}
+                    onPress={() =>
+                      existingOrderId
+                        ? router.push(`/order/${existingOrderId}` as any)
+                        : router.push(`/post/new?editPostId=${post.id}` as any)
+                    }
                   />
                 ) : joined ? (
                   <Button
@@ -364,6 +404,30 @@ export default function ProviderDetailScreen() {
                     variant="secondary"
                     className="flex-1 ml-2"
                     onPress={() => router.push(`/order/${existingOrderId}` as any)}
+                  />
+                ) : closed ? (
+                  <Button
+                    label="Closed"
+                    variant="secondary"
+                    className="flex-1 ml-2"
+                    disabled
+                    onPress={() => {}}
+                  />
+                ) : incoming ? (
+                  <Button
+                    label="Upcoming"
+                    variant="secondary"
+                    className="flex-1 ml-2"
+                    disabled
+                    onPress={() => {}}
+                  />
+                ) : pending ? (
+                  <Button
+                    label="Pending"
+                    variant="secondary"
+                    className="flex-1 ml-2"
+                    disabled
+                    onPress={() => {}}
                   />
                 ) : (
                   <Button
@@ -375,9 +439,7 @@ export default function ProviderDetailScreen() {
                         ? "Full"
                         : placing
                           ? "Placing…"
-                          : post.kind === "seek"
-                            ? "I can help"
-                            : "I'll take that!"
+                          : postKindMeta(post.kind).cta
                     }
                     variant={full ? "secondary" : "primary"}
                     className="flex-1 ml-2"
@@ -390,6 +452,14 @@ export default function ProviderDetailScreen() {
           })()}
         </View>
       </ScrollView>
+      <PublicNoteSheet
+        visible={noteOpen}
+        onClose={() => setNoteOpen(false)}
+        postId={post.id}
+        authorId={post.authorId}
+        title={post.title}
+        highlightNoteId={note}
+      />
     </SafeAreaView>
   );
 }

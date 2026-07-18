@@ -1,0 +1,16 @@
+[build]
+  publish = "dist"
+  # We deploy a pre-built `dist` (via `netlify deploy --dir=dist`). Without an
+  # explicit command Netlify auto-detects Expo and re-runs `expo export`, which
+  # overwrites our post-export HTML patch (the mobile viewport meta). Point the
+  # build at the patch script instead so the shipped index.html keeps
+  # `maximum-scale=1, user-scalable=no`.
+  command = "node scripts/postexport.js"
+
+# Expo Router exports a single-page web app (one index.html). Client-side
+# routing means deep links like /discover must fall back to index.html, or
+# Netlify returns 404 on refresh / direct navigation.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

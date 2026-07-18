@@ -98,7 +98,8 @@ export default function VerifyScreen() {
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View className="flex-1 px-6 pt-6">
+        <View className="flex-1 items-center">
+        <View className="flex-1 px-6 pt-6" style={{ width: "100%", maxWidth: 440 }}>
           <Pressable onPress={() => router.back()} className="p-1 w-10">
             <Ionicons name="chevron-back" size={26} color={colors.ink} />
           </Pressable>
@@ -133,6 +134,10 @@ export default function VerifyScreen() {
                 className="text-center text-xl font-bold text-ink"
                 style={{
                   flex: 1,
+                  // minWidth:0 lets the <input> (React Native Web) shrink below
+                  // its ~180px intrinsic width — without it, six boxes overflow
+                  // the viewport on the web build.
+                  minWidth: 0,
                   height: 56,
                   borderRadius: 12,
                   borderWidth: 1,
@@ -146,9 +151,15 @@ export default function VerifyScreen() {
           {error ? <Text className="text-red-500 text-xs mt-3">{error}</Text> : null}
 
           {!IS_SUPABASE ? (
-            <Text className="text-xs text-ink-muted mt-4">
-              Dev tip: any 6 digits work in this build (e.g. 123456).
-            </Text>
+            <Pressable
+              onPress={() => setDigits("123456".split(""))}
+              className="mt-4 flex-row items-center"
+            >
+              <Ionicons name="flash" size={14} color={colors.brand} />
+              <Text className="text-xs font-semibold ml-1" style={{ color: colors.brand }}>
+                Dev: skip verification (any 6 digits work)
+              </Text>
+            </Pressable>
           ) : null}
 
           <View className="mt-6">
@@ -163,6 +174,7 @@ export default function VerifyScreen() {
               {cooldown > 0 ? `Resend code in ${cooldown}s` : "Resend code"}
             </Text>
           </Pressable>
+        </View>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>

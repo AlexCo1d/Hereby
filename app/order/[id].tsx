@@ -9,33 +9,59 @@
 //
 // Backend interface is fully wired through the api/mock layer, so when
 // Supabase comes in we only swap the impl.
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { View, Text, ScrollView, Pressable, Alert, Modal, TextInput } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { View, Text, ScrollView, Pressable, Alert, Modal, Platform, TextInput, Linking } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { Avatar } from "../../components/common/Avatar";
+import { AvatarStack } from "../../components/common/AvatarStack";
 import { Button } from "../../components/common/Button";
 import { Stars } from "../../components/common/Stars";
 import { CheckInCard } from "../../components/post/CheckInCard";
 import { RatingModal } from "../../components/post/RatingModal";
+import { OSMMap } from "../../components/map/OSMMap";
 
 import { api } from "../../services/api";
-import { canStillAppeal, isPartyPresent, partyConfirmedCount } from "../../services/types";
+import {
+  canStillAppeal,
+  everyonePresent,
+  groupAverageRating,
+  groupMemberLabel,
+  isCheckInOpen,
+  isOrderTerminal,
+  isPartyPresent,
+  msUntilCheckIn,
+  NO_SHOW_AFTER_START_MS,
+  presentCount,
+  rosterSize,
+} from "../../services/types";
 import type {
   CancelReason,
-  CheckInChannel,
   Order,
   OrderStatus,
+  Post,
+  User,
 } from "../../services/types";
 import { useAuth } from "../../stores/auth";
 import { colors } from "../../constants/theme";
+
+/** Human countdown like "2h 14m" or "09:58" (under an hour). */
+function formatCountdown(ms: number) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
 
 const STATUS_STYLES: Record<
   OrderStatus,
   { bg: string; fg: string; label: string }
 > = {
+  pending: { bg: "rgba(255,203,31,0.20)", fg: "#B98800", label: "Pending" },
   upcoming: { bg: "rgba(255,107,53,0.16)", fg: "#D2541C", label: "Upcoming" },
   checking_in: { bg: "rgba(62,150,255,0.18)", fg: "#0F62D6", label: "Checking In" },
   in_progress: { bg: "rgba(62,194,143,0.18)", fg: "#138C5E", label: "In Progress" },
@@ -51,13 +77,13 @@ function fmtDateRange(start: string, end: string) {
   const sameDay = s.toDateString() === today.toDateString();
   const dateLabel = sameDay
     ? "Today"
-    : s.toLocaleDateString(undefined, {
+    : s.toLocaleDateString("en-US", {
         weekday: "short",
         month: "short",
         day: "numeric",
       });
   const t = (d: Date) =>
-    d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   return `${dateLabel} · ${t(s)} – ${t(e)}`;
 }
 
@@ -71,12 +97,24 @@ export default function OrderDetailScreen() {
   const myId = useAuth((s) => s.user?.id ?? "");
 
   const [order, setOrder] = useState<Order | null>(null);
+  // The order carries no location itself; we fetch the underlying Post to show
+  // the agreed check-in spot (map + street address + navigation jump).
+  const [post, setPost] = useState<Post | null>(null);
+  const [copied, setCopied] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [pinging, setPinging] = useState(false);
   const [recentlyPinged, setRecentlyPinged] = useState(false);
+  const [responding, setResponding] = useState(false);
   const [disputeOpen, setDisputeOpen] = useState(false);
   const [disputeReason, setDisputeReason] = useState("");
   const [submittingDispute, setSubmittingDispute] = useState(false);
+  // Manual check-in picker (vouch for others once you're present).
+  const [manualOpen, setManualOpen] = useState(false);
+  // Wall clock that ticks every second while the order is live, so the
+  // check-in countdown updates and the screen can flip state at the exact
+  // moment a lifecycle boundary passes.
+  const [now, setNow] = useState(Date.now());
+  const sweepingRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -85,42 +123,93 @@ export default function OrderDetailScreen() {
     // cron will apply). Without this, opening an overdue order would show
     // "Upcoming" until the user did something.
     await api.sweepAutoComplete();
-    setOrder(await api.getOrder(id));
+    const o = await api.getOrder(id);
+    setOrder(o);
+    // Fetch the Post lazily for its location; a missing/deleted post simply
+    // hides the location section rather than blocking the order view.
+    if (o) {
+      try {
+        setPost(await api.getPost(o.postId));
+      } catch {
+        setPost(null);
+      }
+    }
   }, [id]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  // While this screen is open, schedule a single timer to fire at exactly
-  // endAt + 30min so the user watching the page sees the state flip live.
-  // Skipped if we're already past the deadline (load() handles that case)
-  // or in a terminal state.
+  // Tick the wall clock every second while the order is live (accepted but
+  // not terminal). Pending orders don't need it (they wait on the author),
+  // and terminal orders are frozen. This drives the check-in countdown and
+  // the live status flips below.
   useEffect(() => {
     if (!order) return;
-    const isActive =
-      order.status === "upcoming" ||
-      order.status === "checking_in" ||
-      order.status === "in_progress";
-    if (!isActive) return;
-    const fireAt = new Date(order.endAt).getTime() + 30 * 60 * 1000;
-    const delay = fireAt - Date.now();
-    if (delay <= 0) {
-      load();
-      return;
-    }
-    const t = setTimeout(load, delay);
-    return () => clearTimeout(t);
-  }, [order, load]);
+    if (order.status === "pending" || isOrderTerminal(order.status)) return;
+    const iv = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(iv);
+  }, [order]);
 
-  const selfConfirmed = useMemo(
-    () => (order ? partyConfirmedCount(order.checkIn.self) : 0),
+  // When the clock crosses a lifecycle boundary (endAt, or 15 min past start
+  // with a party still absent), re-run the sweep so the stored status flips
+  // to completed / no_show / cancelled while the user is watching. Guarded so
+  // the async sweep isn't fired on every tick.
+  useEffect(() => {
+    if (!order) return;
+    if (order.status === "pending" || isOrderTerminal(order.status)) return;
+    const start = new Date(order.startAt).getTime();
+    const end = new Date(order.endAt).getTime();
+    const allPresent = everyonePresent(order);
+    const shouldFinalize =
+      now >= end || (now >= start + NO_SHOW_AFTER_START_MS && !allPresent);
+    if (shouldFinalize && !sweepingRef.current) {
+      sweepingRef.current = true;
+      load().finally(() => {
+        sweepingRef.current = false;
+      });
+    }
+  }, [now, order, load]);
+
+  const selfPresent = order ? isPartyPresent(order.checkIn.self) : false;
+  const selfStatus = order?.checkIn.self.status ?? "pending";
+  const counterpartPresent = order ? isPartyPresent(order.checkIn.counterpart) : false;
+  // Everyone on the roster except the viewer (host + any group participants),
+  // paired with their current presence — drives the manual-check-in picker
+  // and the progress line.
+  const otherMembers = useMemo(
+    () =>
+      order
+        ? [
+            { user: order.counterpart, checkIn: order.checkIn.counterpart },
+            ...(order.checkIn.others ?? []).map((e) => ({
+              user: e.user,
+              checkIn: e.checkIn,
+            })),
+          ]
+        : [],
     [order],
   );
-  const counterpartPresent = useMemo(
-    () => (order ? isPartyPresent(order.checkIn.counterpart) : false),
-    [order],
-  );
+  const isGroup = (order?.checkIn.others?.length ?? 0) > 0;
+  // Author-first display roster (host + group participants) for the multi-
+  // avatar / multi-name header. Excludes the viewer; `rosterSize` counts them.
+  const groupUsers = useMemo(() => otherMembers.map((m) => m.user), [otherMembers]);
+
+  // Chat: group order → the post's shared group room (one per activity, keyed
+  // server-side by post); 1-on-1 → the thread with the counterpart. An order
+  // always exists here, so the gate opens. openGroupThread returns the real
+  // thread id (a UUID on supabase), so we never hard-code the id format.
+  const onChat = useCallback(async () => {
+    if (!order) return;
+    try {
+      const thread = isGroup
+        ? await api.openGroupThread(order.postId)
+        : await api.openThreadWith({ withUserId: order.counterpart.id });
+      router.push(`/chat/${thread.id}` as any);
+    } catch (e: any) {
+      Alert.alert("Chat unavailable", e?.message ?? "Please try again.");
+    }
+  }, [order, isGroup]);
 
   if (!order) {
     return (
@@ -131,18 +220,85 @@ export default function OrderDetailScreen() {
     );
   }
 
-  const terminal =
-    order.status === "completed" ||
-    order.status === "cancelled" ||
-    order.status === "no_show";
+  const terminal = isOrderTerminal(order.status);
+  const isPending = order.status === "pending";
+  // Check-in only unlocks 15 min before start (spec 0.6). Before that we show
+  // a countdown; the cascade cards stay disabled.
+  const checkInOpen = isCheckInOpen(order, now);
+  const checkInWait = msUntilCheckIn(order, now);
+  const checkInLocked = isPending || !checkInOpen;
 
-  const onToggleChannel = async (channel: CheckInChannel) => {
-    if (terminal) return;
-    const next =
-      order.checkIn.self[channel] === "confirmed"
-        ? await api.resetCheckIn(order.id, channel)
-        : await api.advanceCheckIn(order.id, channel);
-    setOrder({ ...next });
+  const onAccept = async () => {
+    setResponding(true);
+    try {
+      const next = await api.acceptOrder(order.id);
+      setOrder({ ...next });
+    } catch (e: any) {
+      Alert.alert("Couldn't accept", e?.message ?? "Try again in a moment.");
+    } finally {
+      setResponding(false);
+    }
+  };
+
+  const onDecline = async () => {
+    const confirmMsg = order.isMyPost
+      ? "Decline this request? The seat will be freed."
+      : "Withdraw your request?";
+    Alert.alert("Are you sure?", confirmMsg, [
+      { text: "Keep", style: "cancel" },
+      {
+        text: order.isMyPost ? "Decline" : "Withdraw",
+        style: "destructive",
+        onPress: async () => {
+          setResponding(true);
+          try {
+            const next = await api.declineOrder(order.id);
+            setOrder({ ...next });
+          } catch (e: any) {
+            Alert.alert("Couldn't update", e?.message ?? "Try again.");
+          } finally {
+            setResponding(false);
+          }
+        },
+      },
+    ]);
+  };
+
+  // Location check-in: tap → button turns orange ("locating") while the
+  // device matches GPS against the venue in the background → on a match
+  // (~100m) it auto-confirms and turns green. Once present, the viewer can
+  // manually check others in.
+  const onLocationCheckIn = async () => {
+    if (terminal || checkInLocked) return;
+    if (order.checkIn.self.status !== "pending") return; // already locating/done
+    const locating = await api.startLocationCheckIn(order.id);
+    setOrder({ ...locating });
+    // Simulate the background GPS geofence resolving after a short delay.
+    setTimeout(async () => {
+      const done = await api.resolveLocationCheckIn(order.id);
+      setOrder({ ...done });
+    }, 1600);
+  };
+
+  // Manual check-in: vouch for a roster member who hasn't arrived. Second
+  // confirmation before it commits (native Alert; window.confirm on web
+  // since RN's Alert is a no-op there). Only reachable once self is present.
+  const onManualCheckIn = (target: User) => {
+    const commit = async () => {
+      setManualOpen(false);
+      const next = await api.manualCheckIn(order.id, target.id);
+      setOrder({ ...next });
+    };
+    const message = `Confirm that ${target.name} is here at the venue with you.`;
+    if (Platform.OS === "web") {
+      // eslint-disable-next-line no-alert
+      if (typeof window !== "undefined" && window.confirm(message)) commit();
+      return;
+    }
+    Alert.alert("Check them in?", message, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Confirm", onPress: commit },
+    ]);
   };
 
   const onCancel = () => {
@@ -234,29 +390,106 @@ export default function OrderDetailScreen() {
 
   const pastEnd = Date.now() > new Date(order.endAt).getTime();
 
+  // Hand the agreed spot off to the OS map app for turn-by-turn navigation.
+  // web → Google Maps in a new tab; iOS → Apple Maps; Android → a geo: intent
+  // (any installed map app handles it). Falls back to Google Maps if the
+  // native scheme can't be opened.
+  const openInMaps = () => {
+    if (!post) return;
+    const { lat, lng } = post.location;
+    const label = encodeURIComponent(post.locationName ?? order.postTitleSnapshot);
+    const gmaps = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+    if (Platform.OS === "web") {
+      window.open(gmaps, "_blank");
+      return;
+    }
+    const url =
+      Platform.OS === "ios"
+        ? `http://maps.apple.com/?daddr=${lat},${lng}&q=${label}`
+        : `geo:${lat},${lng}?q=${lat},${lng}(${label})`;
+    Linking.openURL(url).catch(() => Linking.openURL(gmaps));
+  };
+
+  // The human address to show + copy. Falls back to the raw coordinates when
+  // the pin was never reverse-geocoded, so "Copy" always yields something a
+  // teammate can paste into a map app.
+  const addressText =
+    post && post.locationName && post.locationName !== "Pinned on map"
+      ? post.locationName
+      : post
+        ? `${post.location.lat.toFixed(5)}, ${post.location.lng.toFixed(5)}`
+        : "";
+
+  // Copy the address to the clipboard. Web-first (navigator.clipboard);
+  // native falls back to an alert so the text is at least visible to copy.
+  const copyAddress = async () => {
+    if (!addressText) return;
+    try {
+      if (Platform.OS === "web" && typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(addressText);
+      } else {
+        Alert.alert("Address", addressText);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      Alert.alert("Address", addressText);
+    }
+  };
+
   return (
     <SafeAreaView className="flex-1 bg-surface" edges={["top", "bottom"]}>
-      <Header onBack={() => router.back()} title="Order" />
+      <Header onBack={() => router.back()} title="Order" onChat={onChat} />
 
       <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 32 }}>
         {/* Header card */}
         <View className="mx-4 mt-3 bg-surface rounded-2xl p-4 border border-ink-line">
-          <View className="flex-row items-center">
-            <Avatar uri={order.counterpart.avatarUrl} size={56} />
-            <View className="flex-1 ml-3">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-base font-bold text-ink">{order.counterpart.name}</Text>
-                <StatusPill status={order.status} />
-              </View>
-              <Text className="text-sm text-ink mt-0.5">{order.postTitleSnapshot}</Text>
-              <View className="flex-row items-center mt-1">
-                <Stars value={order.counterpart.rating} size={12} />
-                <Text className="text-xs text-ink-muted ml-1.5">
-                  {order.counterpart.rating.toFixed(2)} · {order.counterpart.ratingCount} reviews
+          {isGroup ? (
+            // Group activity — stacked avatars + multi-name so it never reads
+            // like a 1-on-1. First name is the host (post author).
+            <View className="flex-row items-center">
+              <AvatarStack users={groupUsers} size={48} max={4} />
+              <View className="flex-1 ml-3">
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-base font-bold text-ink flex-1 mr-2" numberOfLines={1}>
+                    {order.postTitleSnapshot}
+                  </Text>
+                  <StatusPill status={order.status} />
+                </View>
+                <Text className="text-sm text-ink-muted mt-0.5" numberOfLines={1}>
+                  {groupMemberLabel(groupUsers, rosterSize(order))}
                 </Text>
+                {(() => {
+                  const g = groupAverageRating(groupUsers);
+                  return g.count > 0 ? (
+                    <View className="flex-row items-center mt-1">
+                      <Stars value={g.rating} size={12} />
+                      <Text className="text-xs text-ink-muted ml-1.5">
+                        {g.rating.toFixed(2)} · group avg
+                      </Text>
+                    </View>
+                  ) : null;
+                })()}
               </View>
             </View>
-          </View>
+          ) : (
+            <View className="flex-row items-center">
+              <Avatar uri={order.counterpart.avatarUrl} size={56} />
+              <View className="flex-1 ml-3">
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-base font-bold text-ink">{order.counterpart.name}</Text>
+                  <StatusPill status={order.status} />
+                </View>
+                <Text className="text-sm text-ink mt-0.5">{order.postTitleSnapshot}</Text>
+                <View className="flex-row items-center mt-1">
+                  <Stars value={order.counterpart.rating} size={12} />
+                  <Text className="text-xs text-ink-muted ml-1.5">
+                    {order.counterpart.rating.toFixed(2)} · {order.counterpart.ratingCount} reviews
+                  </Text>
+                </View>
+              </View>
+            </View>
+          )}
 
           <View className="mt-3 flex-row items-center">
             <Ionicons name="time-outline" size={14} color={colors.inkMuted} />
@@ -266,96 +499,255 @@ export default function OrderDetailScreen() {
           </View>
         </View>
 
-        {/* Per-party check-in cascade */}
+        {/* Where — the agreed check-in spot. A mini-map anchors the pin, the
+            street address spells it out, and "Open in Maps" hands off to the
+            OS navigator so a joiner can actually get there. Hidden if the post
+            couldn't be loaded. */}
+        {post ? (
+          <View className="mx-4 mt-4 bg-surface rounded-2xl border border-ink-line overflow-hidden">
+            <View style={{ height: 150 }} pointerEvents="none">
+              <OSMMap
+                center={post.location}
+                spanDeg={0.01}
+                markers={[
+                  {
+                    id: "spot",
+                    coordinate: post.location,
+                    color: colors.brand,
+                  },
+                ]}
+              />
+            </View>
+            <View className="p-4 items-center">
+              {/* Centered address — wraps to any length so a long street line
+                  never overflows the card. */}
+              <View className="flex-row items-start justify-center">
+                <Ionicons name="location" size={16} color={colors.brand} style={{ marginTop: 1 }} />
+                <Text className="text-sm text-ink ml-1.5 flex-shrink text-center">
+                  {addressText}
+                </Text>
+              </View>
+              {/* Copy button — lets a teammate grab the address to paste
+                  elsewhere. Flips to "Copied" briefly on tap. */}
+              <Pressable
+                onPress={copyAddress}
+                className="flex-row items-center justify-center mt-2 py-1"
+                hitSlop={8}
+              >
+                <Ionicons
+                  name={copied ? "checkmark" : "copy-outline"}
+                  size={14}
+                  color={colors.brand}
+                />
+                <Text className="text-xs font-semibold ml-1" style={{ color: colors.brand }}>
+                  {copied ? "Copied" : "Copy address"}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={openInMaps}
+                className="flex-row items-center justify-center mt-3 py-2.5 rounded-full self-stretch"
+                style={{ backgroundColor: colors.brand }}
+              >
+                <Ionicons name="navigate" size={16} color="white" />
+                <Text className="text-sm font-bold text-white ml-1.5">Open in Maps</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        {/* Pending request — the order is waiting on the post author to
+            accept. Host POV gets Accept / Decline; taker POV waits (with a
+            demo "simulate accept" so the flow is exercisable single-device). */}
+        {isPending ? (
+          <View
+            className="mx-4 mt-5 p-4 rounded-2xl"
+            style={{ backgroundColor: "rgba(255,203,31,0.14)" }}
+          >
+            <View className="flex-row items-center mb-1">
+              <Ionicons name="hourglass-outline" size={16} color="#B98800" />
+              <Text className="text-base font-bold text-ink ml-1.5">
+                {order.isMyPost
+                  ? `${order.counterpart.name} wants to join`
+                  : "Request sent"}
+              </Text>
+            </View>
+            <Text className="text-xs text-ink-muted leading-4 mb-3">
+              {order.isMyPost
+                ? "Accept to confirm the booking — it'll move to Upcoming and check-in opens 15 minutes before the start time."
+                : `Waiting for ${order.counterpart.name} to accept your request. We'll notify you the moment they do.`}
+            </Text>
+            <View className="flex-row" style={{ gap: 10 }}>
+              {/* Host decides (Accept/Decline). The taker can only withdraw —
+                  acceptance is the author's action, delivered for real via the
+                  backend, so no single-device "simulate" shortcut here. */}
+              {order.isMyPost ? (
+                <Button
+                  label={responding ? "…" : "Accept request"}
+                  variant="primary"
+                  className="flex-1"
+                  disabled={responding}
+                  onPress={onAccept}
+                />
+              ) : null}
+              <Button
+                label={order.isMyPost ? "Decline" : "Withdraw"}
+                variant="secondary"
+                className="flex-1"
+                disabled={responding}
+                onPress={onDecline}
+              />
+            </View>
+          </View>
+        ) : null}
+
+        {/* Roster check-in — hidden until the request is accepted. */}
+        {!isPending ? (
         <View className="mx-4 mt-5">
           <View className="flex-row items-center justify-between mb-1">
             <Text className="text-base font-bold text-ink">Check-in</Text>
-            <Text className="text-xs text-ink-muted">{selfConfirmed} / 3 confirmed</Text>
+            <Text className="text-xs text-ink-muted">
+              {presentCount(order)} / {rosterSize(order)} checked in
+            </Text>
           </View>
           <Text className="text-xs text-ink-muted leading-4 mb-3">
-            Any one of these is enough to prove you arrived. Location runs in the background — you
-            don't need to tap. QR and Mutual are extra layers when the meetup is interactive.
+            Tap Location to check yourself in — your phone confirms you're at the venue in the
+            background. Once you're in, Manual unlocks so you can check in anyone who's arrived but
+            hasn't tapped yet.
           </Text>
+
+          {/* Check-in opens 15 min before start. Until then both methods are
+              locked and we show a live countdown. */}
+          {checkInLocked && !terminal ? (
+            <View
+              className="flex-row items-center mb-3 rounded-xl px-3 py-2.5"
+              style={{ backgroundColor: "rgba(76,158,235,0.12)" }}
+            >
+              <Ionicons name="lock-closed-outline" size={16} color={colors.accentBlue} />
+              <Text className="text-xs text-ink ml-2 flex-1">
+                Check-in opens 15 min before start —{" "}
+                <Text className="font-bold" style={{ color: colors.accentBlue }}>
+                  in {formatCountdown(checkInWait)}
+                </Text>
+              </Text>
+            </View>
+          ) : null}
 
           <View className="flex-row" style={{ gap: 8 }}>
             <CheckInCard
-              channel="location"
+              method="location"
               title="Location"
-              subtitle="Auto-confirms when your phone reaches the venue"
+              subtitle="Confirms you're at the venue in the background"
               icon="location-outline"
-              status={order.checkIn.self.location}
-              disabled={terminal}
-              onPress={() => onToggleChannel("location")}
+              status={selfStatus}
+              labels={{
+                pending: "TAP TO CHECK IN",
+                locating: "LOCATING…",
+                confirmed: "CHECKED IN",
+              }}
+              disabled={terminal || checkInLocked || selfStatus === "locating"}
+              onPress={onLocationCheckIn}
             />
             <CheckInCard
-              channel="qr"
-              title="QR scan"
-              subtitle="Scan the other person's QR — confirms both sides at once"
-              icon="qr-code-outline"
-              status={order.checkIn.self.qr}
-              disabled={terminal}
-              onPress={() => onToggleChannel("qr")}
-            />
-            <CheckInCard
-              channel="peer"
-              title="Mutual"
-              subtitle="Tap 'I'm here' once you're at the venue"
+              method="manual"
+              title="Manual"
+              subtitle={
+                selfPresent
+                  ? "Check in someone who's here but hasn't tapped"
+                  : "Unlocks after your own check-in"
+              }
               icon="people-outline"
-              status={order.checkIn.self.peer}
-              disabled={terminal}
-              onPress={() => onToggleChannel("peer")}
+              status="pending"
+              labels={{ pending: selfPresent ? "CHECK OTHERS IN" : "LOCKED" }}
+              disabled={terminal || checkInLocked || !selfPresent}
+              onPress={() => setManualOpen(true)}
             />
           </View>
 
-          {/* Counterpart presence — purely informational; the absent side
+          {/* Roster presence. For a group we list every member; for 1-on-1
+              we show a single line about the counterpart. The absent side
               can't fake their presence from this screen. */}
-          <View
-            className="flex-row items-center mt-3 rounded-xl px-3 py-2"
-            style={{
-              backgroundColor: counterpartPresent
-                ? "rgba(62,194,143,0.12)"
-                : "rgba(120,120,120,0.10)",
-            }}
-          >
-            <Ionicons
-              name={counterpartPresent ? "person" : "person-outline"}
-              size={16}
-              color={counterpartPresent ? "#138C5E" : colors.inkMuted}
-            />
-            <Text className="text-xs text-ink ml-2 flex-1">
-              {counterpartPresent
-                ? `${order.counterpart.name} has arrived at the venue.`
-                : `Waiting for ${order.counterpart.name}. We'll keep watching their location in the background.`}
-            </Text>
-            {/* "Remind them" — surfaces only when self is present but
-                counterpart isn't, AND the order isn't terminal. The mock api
-                throttles to ≤1 ping / 5 min; on success we just leave the
-                button labeled "Sent ✓" until the cooldown resets. */}
-            {!terminal && selfConfirmed >= 1 && !counterpartPresent ? (
-              <Pressable
-                onPress={onPingCounterpart}
-                hitSlop={6}
-                style={{
-                  marginLeft: 8,
-                  paddingHorizontal: 10,
-                  paddingVertical: 4,
-                  borderRadius: 999,
-                  backgroundColor: pinging || recentlyPinged ? colors.surfaceSoft : colors.brand,
-                }}
-                disabled={pinging || recentlyPinged}
-              >
-                <Text
+          {isGroup ? (
+            <View className="mt-3 rounded-xl overflow-hidden" style={{ borderWidth: 1, borderColor: colors.line }}>
+              {otherMembers.map((m, i) => {
+                const present = isPartyPresent(m.checkIn);
+                const via = m.checkIn.method === "manual" ? "checked in by a teammate" : "checked in";
+                return (
+                  <View
+                    key={m.user.id}
+                    className="flex-row items-center px-3 py-2"
+                    style={{
+                      borderTopWidth: i === 0 ? 0 : 1,
+                      borderTopColor: colors.line,
+                      backgroundColor: present ? "rgba(62,194,143,0.08)" : colors.surface,
+                    }}
+                  >
+                    <Avatar uri={m.user.avatarUrl} size={26} />
+                    <Text className="text-sm text-ink ml-2 flex-1" numberOfLines={1}>
+                      {m.user.name}
+                    </Text>
+                    <Ionicons
+                      name={present ? "checkmark-circle" : "ellipse-outline"}
+                      size={16}
+                      color={present ? "#138C5E" : colors.inkMuted}
+                    />
+                    <Text
+                      className="text-[11px] ml-1"
+                      style={{ color: present ? "#138C5E" : colors.inkMuted }}
+                    >
+                      {present ? via : "not yet"}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+          ) : (
+            <View
+              className="flex-row items-center mt-3 rounded-xl px-3 py-2"
+              style={{
+                backgroundColor: counterpartPresent
+                  ? "rgba(62,194,143,0.12)"
+                  : "rgba(120,120,120,0.10)",
+              }}
+            >
+              <Ionicons
+                name={counterpartPresent ? "person" : "person-outline"}
+                size={16}
+                color={counterpartPresent ? "#138C5E" : colors.inkMuted}
+              />
+              <Text className="text-xs text-ink ml-2 flex-1">
+                {counterpartPresent
+                  ? `${order.counterpart.name} has arrived at the venue.`
+                  : `Waiting for ${order.counterpart.name}. We'll keep watching their location in the background.`}
+              </Text>
+              {/* "Remind them" — surfaces only when self is present but
+                  counterpart isn't, AND the order isn't terminal. The mock api
+                  throttles to ≤1 ping / 5 min. */}
+              {!terminal && selfPresent && !counterpartPresent ? (
+                <Pressable
+                  onPress={onPingCounterpart}
+                  hitSlop={6}
                   style={{
-                    color: pinging || recentlyPinged ? colors.inkMuted : "white",
-                    fontSize: 11,
-                    fontWeight: "700",
+                    marginLeft: 8,
+                    paddingHorizontal: 10,
+                    paddingVertical: 4,
+                    borderRadius: 999,
+                    backgroundColor: pinging || recentlyPinged ? colors.surfaceSoft : colors.brand,
                   }}
+                  disabled={pinging || recentlyPinged}
                 >
-                  {pinging ? "…" : recentlyPinged ? "Pinged" : "Remind them"}
-                </Text>
-              </Pressable>
-            ) : null}
-          </View>
+                  <Text
+                    style={{
+                      color: pinging || recentlyPinged ? colors.inkMuted : "white",
+                      fontSize: 11,
+                      fontWeight: "700",
+                    }}
+                  >
+                    {pinging ? "…" : recentlyPinged ? "Pinged" : "Remind them"}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          )}
 
           {/* Incoming nudge banner: when the counterpart pinged us. Mock
               flags it via `lastNudgeFrom === "counterpart"`; production fires
@@ -368,21 +760,24 @@ export default function OrderDetailScreen() {
             >
               <Ionicons name="notifications" size={16} color="#B98800" />
               <Text className="text-xs text-ink ml-2 flex-1">
-                {order.counterpart.name} is waiting for you. Tap a check-in option above when you
-                arrive.
+                {order.counterpart.name} is waiting for you. Tap Location above when you arrive.
               </Text>
             </View>
           ) : null}
 
-          {selfConfirmed >= 1 && !terminal ? (
+          {selfPresent && !terminal ? (
             <View className="flex-row items-center mt-2 bg-brand/10 rounded-xl px-3 py-2">
-              <Ionicons name="shield-checkmark" size={16} color={colors.brand} />
+              <Ionicons name="shield-checkmark" size={16} color={colors.accentGreen} />
               <Text className="text-xs text-ink ml-2 flex-1">
-                You're checked in. {counterpartPresent ? "Have a good session!" : "If they don't show, you won't be charged."}
+                You're checked in.{" "}
+                {everyonePresent(order)
+                  ? "Everyone's here — have a good session!"
+                  : "Tap Manual to check in anyone who's arrived."}
               </Text>
             </View>
           ) : null}
         </View>
+        ) : null}
 
         {/* Terminal-state context — explains the outcome, who pays, etc. */}
         {order.status === "cancelled" ? (
@@ -430,7 +825,7 @@ export default function OrderDetailScreen() {
                   </Text>
                 </View>
                 <Text className="text-[11px] text-ink-muted mt-1 leading-4">
-                  Filed {new Date(order.disputeOpenedAt).toLocaleString()}. Fee and rating impact
+                  Filed {new Date(order.disputeOpenedAt).toLocaleString("en-US")}. Fee and rating impact
                   are held until a moderator reviews. We'll notify you here.
                 </Text>
                 {order.disputeResolution ? (
@@ -457,7 +852,7 @@ export default function OrderDetailScreen() {
 
         {/* Actions */}
         <View className="mx-4 mt-6" style={{ gap: 10 }}>
-          {!terminal && !pastEnd ? (
+          {!terminal && !isPending && !pastEnd ? (
             <Button label="Cancel order" variant="secondary" onPress={onCancel} />
           ) : null}
           {!terminal && pastEnd ? (
@@ -553,17 +948,92 @@ export default function OrderDetailScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Manual check-in picker — floating list of roster members who haven't
+          checked in yet. Only reachable once the viewer is present. Tapping a
+          name asks for a second confirmation before vouching for them. */}
+      <Modal
+        visible={manualOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setManualOpen(false)}
+      >
+        <Pressable
+          className="flex-1 items-center justify-center"
+          style={{ backgroundColor: "rgba(0,0,0,0.35)" }}
+          onPress={() => setManualOpen(false)}
+        >
+          <Pressable
+            className="bg-surface rounded-2xl mx-8 p-5"
+            style={{ width: "86%" }}
+            onPress={() => {}}
+          >
+            <View className="flex-row items-center justify-between mb-1">
+              <Text className="text-base font-bold text-ink">Check someone in</Text>
+              <Pressable onPress={() => setManualOpen(false)}>
+                <Ionicons name="close" size={20} color={colors.inkMuted} />
+              </Pressable>
+            </View>
+            <Text className="text-xs text-ink-muted leading-4 mb-3">
+              Tap a name to confirm they're here with you. Only do this for people you can
+              actually see at the venue.
+            </Text>
+            {otherMembers.filter((m) => !isPartyPresent(m.checkIn)).length === 0 ? (
+              <Text className="text-sm text-ink-muted text-center py-4">
+                Everyone's already checked in.
+              </Text>
+            ) : (
+              otherMembers
+                .filter((m) => !isPartyPresent(m.checkIn))
+                .map((m) => (
+                  <Pressable
+                    key={m.user.id}
+                    className="flex-row items-center py-2.5"
+                    onPress={() => onManualCheckIn(m.user)}
+                  >
+                    <Avatar uri={m.user.avatarUrl} size={34} />
+                    <Text className="text-sm font-semibold text-ink ml-3 flex-1">
+                      {m.user.name}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={18} color={colors.inkMuted} />
+                  </Pressable>
+                ))
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
 
-function Header({ onBack, title }: { onBack: () => void; title: string }) {
+function Header({
+  onBack,
+  title,
+  onChat,
+}: {
+  onBack: () => void;
+  title: string;
+  onChat?: () => void;
+}) {
   return (
     <View className="px-3 pt-2 pb-2 flex-row items-center border-b border-ink-line">
       <Pressable onPress={onBack} className="p-1 mr-1">
         <Ionicons name="chevron-back" size={24} color={colors.ink} />
       </Pressable>
       <Text className="text-lg font-bold text-ink">{title}</Text>
+      {onChat ? (
+        <Pressable
+          onPress={onChat}
+          hitSlop={8}
+          className="ml-auto flex-row items-center rounded-full px-3 py-1.5"
+          style={{ backgroundColor: colors.brandSoft }}
+        >
+          <Ionicons name="chatbubble-ellipses-outline" size={16} color={colors.brand} />
+          <Text className="text-sm font-semibold ml-1.5" style={{ color: colors.brand }}>
+            Chat
+          </Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }

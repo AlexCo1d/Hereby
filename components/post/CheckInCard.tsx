@@ -1,73 +1,96 @@
-// Visual card for one of the three check-in cascade channels (spec 0.6).
+// Visual card for one of the two check-in methods on the Order screen.
 //
-// Three of these sit side-by-side in the Order detail screen, forming the
-// "any 2 of 3 = checked in" cascade. Designed so we can later swap the
-// onPress callback for real GPS geofencing / camera-based QR / peer push
-// notification without touching the UI.
+// Two of these sit side-by-side: "Location" (your own GPS check-in) and
+// "Manual" (vouch for others once you're present). The card is purely
+// presentational — it renders one of three tones from `status` and fires
+// `onPress`; the screen owns the real GPS watch / manual-picker logic.
+//
+//   pending   → grey  ("tap to…")
+//   locating  → orange (background GPS match in progress)
+//   confirmed → green  (done)
 import { Pressable, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { colors } from "../../constants/theme";
 import type { CheckInStatus } from "../../services/types";
 
+/** Per-status CTA copy. Falls back to sensible defaults per status. */
+export type CheckInCardLabels = Partial<Record<CheckInStatus, string>>;
+
 export type CheckInCardSpec = {
-  /** Stable channel id used by the api ("location" | "qr" | "peer"). */
-  channel: string;
+  /** Stable method id used by the screen ("location" | "manual"). */
+  method: string;
   title: string;
-  /** Subtitle: how this confirmation works in production. */
+  /** Subtitle: how this method works, one line of plain-language copy. */
   subtitle: string;
-  /** Ionicons name for the channel icon. */
+  /** Ionicons name for the resting icon. */
   icon: keyof typeof Ionicons.glyphMap;
   status: CheckInStatus;
-  /** Tap action — in dev this just flips the local state; in prod it kicks
-   *  off the real verification (open camera / start geofence watch / ping
-   *  peer / etc.). */
+  /** Optional CTA overrides per status. */
+  labels?: CheckInCardLabels;
+  /** Tap action. */
   onPress?: () => void;
-  /** When true, render a disabled state (e.g. order already completed). */
+  /** When true, render a disabled (non-tappable, dimmed) state. */
   disabled?: boolean;
 };
+
+const DEFAULT_LABELS: Record<CheckInStatus, string> = {
+  pending: "TAP TO CHECK IN",
+  locating: "LOCATING…",
+  confirmed: "CHECKED IN",
+};
+
+/** Tone (accent color) for each status. */
+function toneFor(status: CheckInStatus): string {
+  if (status === "confirmed") return colors.accentGreen;
+  if (status === "locating") return colors.brand;
+  return colors.line; // pending → neutral
+}
 
 export function CheckInCard({
   title,
   subtitle,
   icon,
   status,
+  labels,
   onPress,
   disabled,
 }: CheckInCardSpec) {
-  const confirmed = status === "confirmed";
+  const active = status === "locating" || status === "confirmed";
+  const tone = toneFor(status);
+  const label = labels?.[status] ?? DEFAULT_LABELS[status];
+  // Icon: checkmark once confirmed, spinning-ish locate glyph while locating,
+  // otherwise the method's resting icon.
+  const glyph: keyof typeof Ionicons.glyphMap =
+    status === "confirmed" ? "checkmark" : status === "locating" ? "navigate" : icon;
+
   return (
     <Pressable
       onPress={disabled ? undefined : onPress}
-      // Equal-width siblings: parent wraps in <View style={{ flex: 1 }}>.
+      // Equal-width siblings: parent wraps each in <View style={{ flex: 1 }}>.
       style={{
         flex: 1,
-        backgroundColor: confirmed ? "rgba(255,107,53,0.10)" : colors.surface,
+        backgroundColor: active ? `${tone}1A` : colors.surface, // ~10% tint
         borderWidth: 1.5,
-        borderColor: confirmed ? colors.brand : colors.line,
+        borderColor: active ? tone : colors.line,
         borderRadius: 14,
         paddingVertical: 14,
         paddingHorizontal: 10,
         alignItems: "center",
-        opacity: disabled ? 0.45 : 1,
+        opacity: disabled ? 0.4 : 1,
       }}
     >
-      {/* Top: icon + status pill in corner */}
       <View
         style={{
           width: 44,
           height: 44,
           borderRadius: 22,
-          backgroundColor: confirmed ? colors.brand : colors.surfaceSoft,
+          backgroundColor: active ? tone : colors.surfaceSoft,
           alignItems: "center",
           justifyContent: "center",
           marginBottom: 8,
         }}
       >
-        <Ionicons
-          name={confirmed ? "checkmark" : icon}
-          size={22}
-          color={confirmed ? "white" : colors.ink}
-        />
+        <Ionicons name={glyph} size={22} color={active ? "white" : colors.ink} />
       </View>
 
       <Text className="text-sm font-bold text-ink text-center" numberOfLines={1}>
@@ -86,18 +109,18 @@ export function CheckInCard({
           paddingHorizontal: 10,
           paddingVertical: 3,
           borderRadius: 999,
-          backgroundColor: confirmed ? colors.brand : colors.surfaceSoft,
+          backgroundColor: active ? tone : colors.surfaceSoft,
         }}
       >
         <Text
           style={{
-            color: confirmed ? "white" : colors.inkMuted,
+            color: active ? "white" : colors.inkMuted,
             fontSize: 10,
             fontWeight: "700",
             letterSpacing: 0.3,
           }}
         >
-          {confirmed ? "CONFIRMED" : "TAP TO CONFIRM"}
+          {label}
         </Text>
       </View>
     </Pressable>

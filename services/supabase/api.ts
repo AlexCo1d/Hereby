@@ -9,13 +9,16 @@ import { supabase } from "./client";
 import type { HerebyApi } from "../api";
 import type {
   CancelReason,
-  CheckInChannel,
   ChatThread,
   DiscoverFilter,
   Message,
+  Notification,
   Order,
   Post,
+  PublicNote,
+  PublicNoteReplyTo,
   Rating,
+  UnreadCounts,
   User,
 } from "../types";
 
@@ -45,6 +48,8 @@ function rowToPost(r: any): Post {
     description: r.description ?? undefined,
     tags: r.tags ?? [],
     priceCentsPerHour: r.price_cents_per_hour ?? 0,
+    priceMode: r.price_mode ?? undefined,
+    budgetCents: r.budget_cents ?? 0,
     cancellationFeeCents: r.cancellation_fee_cents ?? 0,
     skillLevel: r.skill_level ?? undefined,
     skillMode: r.skill_mode ?? undefined,
@@ -59,6 +64,9 @@ function rowToPost(r: any): Post {
     postedAt: r.posted_at,
     coverImageUrl: r.cover_image_url ?? undefined,
     matchScore: r.match_score ?? undefined,
+    orderNo: r.order_no ?? undefined,
+    status: r.status ?? undefined,
+    pendingRounds: r.pending_rounds ?? 0,
   };
 }
 
@@ -76,6 +84,8 @@ function postToInsert(input: Omit<Post, "id" | "postedAt">) {
     description: input.description ?? null,
     tags: input.tags ?? [],
     price_cents_per_hour: input.priceCentsPerHour,
+    price_mode: input.priceMode ?? null,
+    budget_cents: input.budgetCents ?? 0,
     cancellation_fee_cents: input.cancellationFeeCents ?? 0,
     skill_level: input.skillLevel ?? null,
     skill_mode: input.skillMode ?? "any",
@@ -137,6 +147,8 @@ export const supabaseApi: HerebyApi = {
     if (patch.description !== undefined) row.description = patch.description;
     if (patch.tags !== undefined) row.tags = patch.tags;
     if (patch.priceCentsPerHour !== undefined) row.price_cents_per_hour = patch.priceCentsPerHour;
+    if (patch.priceMode !== undefined) row.price_mode = patch.priceMode;
+    if (patch.budgetCents !== undefined) row.budget_cents = patch.budgetCents;
     if (patch.cancellationFeeCents !== undefined) row.cancellation_fee_cents = patch.cancellationFeeCents;
     if (patch.skillLevel !== undefined) row.skill_level = patch.skillLevel;
     if (patch.skillMode !== undefined) row.skill_mode = patch.skillMode;
@@ -183,22 +195,53 @@ export const supabaseApi: HerebyApi = {
     if (!created) throw new Error("Order created but not retrievable");
     return created;
   },
-  async advanceCheckIn(orderId, channel: CheckInChannel) {
-    // Writes the viewer's side; qr is mutual. RPC keeps the role-swap logic
-    // server-side so the client doesn't need to know provider vs customer.
-    const { error } = await supabase.rpc("advance_check_in", {
+  async acceptOrder(orderId) {
+    // TODO(migration): accept_order(p_order_id) flips pending → upcoming and
+    // enforces that only the post author may accept (RLS / auth.uid()).
+    const { error } = await supabase.rpc("accept_order", { p_order_id: orderId });
+    if (error) throw error;
+    const o = await this.getOrder(orderId);
+    if (!o) throw new Error("Order not found");
+    return o;
+  },
+  async declineOrder(orderId) {
+    // TODO(migration): decline_order(p_order_id) cancels a pending request and
+    // frees the seat.
+    const { error } = await supabase.rpc("decline_order", { p_order_id: orderId });
+    if (error) throw error;
+    const o = await this.getOrder(orderId);
+    if (!o) throw new Error("Order not found");
+    return o;
+  },
+  async startLocationCheckIn(orderId) {
+    // TODO(migration): start_location_check_in(p_order_id) sets the caller's
+    // party to `locating` while the device confirms GPS proximity.
+    const { error } = await supabase.rpc("start_location_check_in", {
       p_order_id: orderId,
-      p_channel: channel,
     });
     if (error) throw error;
     const o = await this.getOrder(orderId);
     if (!o) throw new Error("Order not found");
     return o;
   },
-  async resetCheckIn(orderId, channel: CheckInChannel) {
-    const { error } = await supabase.rpc("reset_check_in", {
+  async resolveLocationCheckIn(orderId) {
+    // TODO(migration): resolve_location_check_in(p_order_id) confirms the
+    // caller once GPS matched the venue (~100m). Server re-validates location.
+    const { error } = await supabase.rpc("resolve_location_check_in", {
       p_order_id: orderId,
-      p_channel: channel,
+    });
+    if (error) throw error;
+    const o = await this.getOrder(orderId);
+    if (!o) throw new Error("Order not found");
+    return o;
+  },
+  async manualCheckIn(orderId, targetUserId: string) {
+    // TODO(migration): manual_check_in(p_order_id, p_target_user_id) lets a
+    // present member vouch for another roster member. Server enforces that the
+    // caller has already checked themselves in.
+    const { error } = await supabase.rpc("manual_check_in", {
+      p_order_id: orderId,
+      p_target_user_id: targetUserId,
     });
     if (error) throw error;
     const o = await this.getOrder(orderId);
@@ -274,6 +317,14 @@ export const supabaseApi: HerebyApi = {
     if (!t) throw new Error("Thread not found");
     return t;
   },
+  async openGroupThread(postId) {
+    // get-or-create the post's single group room + add caller as a member.
+    const { data, error } = await supabase.rpc("open_group_thread", { p_post: postId });
+    if (error) throw error;
+    const t = await this.getThread(data as string);
+    if (!t) throw new Error("Group thread not found");
+    return t;
+  },
   async listMessages(threadId) {
     const { data, error } = await supabase
       .from("messages")
@@ -285,29 +336,56 @@ export const supabaseApi: HerebyApi = {
       id: m.id,
       threadId: m.thread_id,
       fromUserId: m.from_user_id,
-      text: m.text,
+      text: m.text ?? "",
+      imageUrl: m.image_url ?? undefined,
       sentAt: m.sent_at,
     })) as Message[];
   },
-  async sendMessage(threadId, text) {
+  async sendMessage(threadId, text, imageUrl) {
+    const trimmed = text.trim();
+    if (!trimmed && !imageUrl) throw new Error("Empty message");
     const id = await uid();
     const { data, error } = await supabase
       .from("messages")
-      .insert({ thread_id: threadId, from_user_id: id, text })
+      .insert({
+        thread_id: threadId,
+        from_user_id: id,
+        text: trimmed,
+        image_url: imageUrl ?? null,
+      })
       .select()
       .single();
     if (error) throw error;
+    // Image-only messages show a camera glyph in the inbox preview.
     await supabase
       .from("threads")
-      .update({ last_message: text, last_message_at: new Date().toISOString() })
+      .update({
+        last_message: trimmed || "📷 Photo",
+        last_message_at: new Date().toISOString(),
+      })
       .eq("id", threadId);
     return {
       id: data.id,
       threadId: data.thread_id,
       fromUserId: data.from_user_id,
-      text: data.text,
+      text: data.text ?? "",
+      imageUrl: data.image_url ?? undefined,
       sentAt: data.sent_at,
     };
+  },
+  async uploadChatImage(localUri) {
+    const id = await uid();
+    // Fetch the picked file into a blob, then upload to the public bucket.
+    const resp = await fetch(localUri);
+    const blob = await resp.blob();
+    const ext = (blob.type && blob.type.split("/")[1]) || "jpg";
+    const path = `${id}/${Date.now()}.${ext}`;
+    const { error } = await supabase.storage
+      .from("chat-images")
+      .upload(path, blob, { contentType: blob.type || "image/jpeg", upsert: false });
+    if (error) throw error;
+    const { data } = supabase.storage.from("chat-images").getPublicUrl(path);
+    return data.publicUrl;
   },
   async markThreadRead(threadId) {
     const id = await uid();
@@ -322,6 +400,108 @@ export const supabaseApi: HerebyApi = {
       .from("thread_reads")
       .upsert({ thread_id: threadId, user_id: id, deleted: true });
     if (error) throw error;
+  },
+
+  async listPublicNotes(postId) {
+    const { data, error } = await supabase
+      .from("post_notes")
+      .select("*, author:users(*)")
+      .eq("post_id", postId)
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    const rows = (data ?? []) as any[];
+    // Reconstruct each note's `replyTo` from the sibling it points at — avoids a
+    // PostgREST self-join. Notes load oldest-first, and a reply always follows
+    // its parent, so the parent is already in this same result set.
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    return rows.map((r) => {
+      const parent = r.reply_to_note_id ? byId.get(r.reply_to_note_id) : undefined;
+      const replyTo: PublicNoteReplyTo | undefined = parent
+        ? {
+            noteId: parent.id,
+            authorId: parent.author_id,
+            authorName: parent.author?.name ?? "",
+            excerpt: (parent.text ?? "").slice(0, 80),
+          }
+        : undefined;
+      const note: PublicNote = {
+        id: r.id,
+        postId: r.post_id,
+        author: rowToUser(r.author),
+        text: r.text,
+        sentAt: r.created_at,
+        ...(replyTo ? { replyTo } : {}),
+      };
+      return note;
+    });
+  },
+  async addPublicNote(postId, text, _author, replyTo) {
+    // The author is derived from the authenticated session, so the client hint
+    // (_author) is ignored here. The reply notification is fired server-side by
+    // the trg_notify_note_reply trigger (migration 0011).
+    const authorId = await uid();
+    const { data, error } = await supabase
+      .from("post_notes")
+      .insert({
+        post_id: postId,
+        author_id: authorId,
+        text,
+        reply_to_note_id: replyTo?.noteId ?? null,
+      })
+      .select("*, author:users(*)")
+      .single();
+    if (error) throw error;
+    return {
+      id: data.id,
+      postId: data.post_id,
+      author: rowToUser(data.author),
+      text: data.text,
+      sentAt: data.created_at,
+      ...(replyTo ? { replyTo } : {}),
+    };
+  },
+
+  // ── notifications ─────────────────────────────────────────────────────────
+  async listNotifications() {
+    const { data, error } = await supabase.rpc("notifications_for_viewer");
+    if (error) throw error;
+    return (data as Notification[]) ?? [];
+  },
+  async markNotificationRead(id) {
+    const { error } = await supabase
+      .from("notifications")
+      .update({ read: true })
+      .eq("id", id);
+    if (error) throw error;
+  },
+  async markAllNotificationsRead() {
+    const me = await uid();
+    const { error } = await supabase
+      .from("notifications")
+      .update({ read: true })
+      .eq("user_id", me)
+      .eq("read", false);
+    if (error) throw error;
+  },
+  async deleteNotification(id) {
+    // RLS (notifications_read/…): a user can only delete their own rows. Add a
+    // delete policy in the migration so this is permitted.
+    const { error } = await supabase.from("notifications").delete().eq("id", id);
+    if (error) throw error;
+  },
+  async clearReadNotifications() {
+    const me = await uid();
+    const { error } = await supabase
+      .from("notifications")
+      .delete()
+      .eq("user_id", me)
+      .eq("read", true);
+    if (error) throw error;
+  },
+  async getUnreadCounts() {
+    const { data, error } = await supabase.rpc("get_unread_counts");
+    if (error) throw error;
+    return data as UnreadCounts;
   },
 
   async getUser(id) {

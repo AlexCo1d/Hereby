@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["expo", "start", "--web", "--port", "8081", "--clear"],
+      "port": 8081
+    },
+    {
+      "name": "dist",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "dist", "-s", "-l", "5000"],
+      "port": 5000
+    },
+    {
+      "name": "dist-mock",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "dist-mock", "-s", "-l", "5050"],
+      "port": 5050
+    }
+  ]
+}

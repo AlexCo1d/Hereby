@@ -18,7 +18,6 @@ import {
   TextInput,
   ScrollView,
   Pressable,
-  Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
@@ -30,17 +29,29 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { Button } from "../../components/common/Button";
 import { NumberStepper } from "../../components/common/NumberStepper";
-import { DateTimePickerField } from "../../components/common/DateTimePickerField";
+import { DateTimeWheels } from "../../components/common/DateTimeWheels";
 import { AddressAutocomplete } from "../../components/common/AddressAutocomplete";
 import { LocateButton } from "../../components/common/LocateButton";
 import { OSMMap } from "../../components/map/OSMMap";
+import { reverseGeocode } from "../../services/geocode";
 
 import { api } from "../../services/api";
+import { notify } from "../../services/notify";
 import { useAuth } from "../../stores/auth";
 import { UCF_CENTER, INTERESTS } from "../../services/mock/data";
-import type { PostKind, PostFormat, PostSkillMode } from "../../services/types";
-import { MAX_POST_TAGS, SKILL_LEVELS, describeSkillRequirement } from "../../services/types";
+import type { PostKind, PostFormat, PostSkillMode, PriceMode } from "../../services/types";
+import {
+  MAX_POST_TAGS,
+  SKILL_LEVELS,
+  describeSkillRequirement,
+  postKindMeta,
+  resolvePriceMode,
+} from "../../services/types";
 import { colors } from "../../constants/theme";
+
+// Cap the title so it renders in full on a compact Discover card row. Longer
+// context belongs in the (optional) description.
+const TITLE_MAX = 60;
 
 // Round "now + 1h" to next half-hour as the default start.
 function defaultStart() {
@@ -95,7 +106,7 @@ export default function NewPostScreen() {
     const clean = tagDraft.trim();
     if (!clean) return;
     if (tags.length >= MAX_POST_TAGS) {
-      Alert.alert("That's enough tags", `You can add up to ${MAX_POST_TAGS}.`);
+      notify("That's enough tags", `You can add up to ${MAX_POST_TAGS}.`);
       return;
     }
     // Case-insensitive de-dupe.
@@ -116,7 +127,12 @@ export default function NewPostScreen() {
   const [startAt, setStartAt] = useState<Date>(defaultStart);
   const [durationMins, setDurationMins] = useState(60);
   const [seats, setSeats] = useState(1);
+  // Structured money expectation (spec: upfront, not free-text). `priceMode`
+  // picks the shape; `priceText` is the hourly rate for "paid", `budgetText`
+  // the total for "budget". free/split carry no amount.
+  const [priceMode, setPriceMode] = useState<PriceMode>("paid");
   const [priceText, setPriceText] = useState("");
+  const [budgetText, setBudgetText] = useState("");
   const [feeText, setFeeText] = useState("0");
 
   const [location, setLocation] = useState(defaultCenter);
@@ -124,17 +140,36 @@ export default function NewPostScreen() {
   const [recenterToken, setRecenterToken] = useState(0);
   const [submitting, setSubmitting] = useState(false);
 
-  // Throttle map pan → state so rapid gestures don't thrash.
+  // Throttle map pan → state so rapid gestures don't thrash. While the pin is
+  // moving we only track coordinates (label reads a transient "Locating…"); the
+  // costly reverse-geocode fires ONCE the pin settles (no new center for 700ms),
+  // per the spec "拖动然后停下来的时候才找街道地址，移动的时候不用".
   const pendingRef = useRef<{ lat: number; lng: number } | null>(null);
+  const settleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Monotonic id so a slow earlier reverse response can't overwrite a newer one.
+  const reverseReqRef = useRef(0);
   useEffect(() => {
     const id = setInterval(() => {
       if (pendingRef.current) {
-        setLocation(pendingRef.current);
-        setLocationLabel("Pinned on map");
+        const c = pendingRef.current;
         pendingRef.current = null;
+        setLocation(c);
+        setLocationLabel("Locating…");
+        // Re-arm the settle timer on every flush: only the LAST one (the pin at
+        // rest) survives to actually resolve the street address.
+        if (settleRef.current) clearTimeout(settleRef.current);
+        settleRef.current = setTimeout(async () => {
+          const myReq = ++reverseReqRef.current;
+          const label = await reverseGeocode(c);
+          if (myReq !== reverseReqRef.current) return;
+          setLocationLabel(label ?? "Pinned on map");
+        }, 700);
       }
     }, 120);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      if (settleRef.current) clearTimeout(settleRef.current);
+    };
   }, []);
 
   // Edit mode: load the post once and hydrate every field.
@@ -157,13 +192,24 @@ export default function NewPostScreen() {
         Math.max(15, Math.round((new Date(p.endAt).getTime() - s.getTime()) / 60000)),
       );
       setSeats(p.seats);
+      const mode = resolvePriceMode(p);
+      setPriceMode(mode);
       setPriceText(p.priceCentsPerHour > 0 ? String(p.priceCentsPerHour / 100) : "");
+      setBudgetText(p.budgetCents ? String(p.budgetCents / 100) : "");
       setFeeText(String((p.cancellationFeeCents ?? 0) / 100));
       setLocation(p.location);
       setLocationLabel(p.locationName ?? "Pinned on map");
       setRecenterToken((n) => n + 1);
     })();
   }, [editPostId]);
+
+  // Picking a kind nudges the money mode to that kind's natural default
+  // (offer→paid, seek→budget, partner→free) so the form pre-fills sensibly.
+  // The user can still override the money mode afterward.
+  const onChangeKind = (next: PostKind) => {
+    setKind(next);
+    setPriceMode(postKindMeta(next).defaultPriceMode);
+  };
 
   // Switching format keeps seats consistent: 1v1 is always a single slot;
   // activity/event need at least 2 (and default there if coming from 1v1).
@@ -175,11 +221,11 @@ export default function NewPostScreen() {
 
   const submit = async () => {
     if (!title.trim()) {
-      Alert.alert("Please add a title");
+      notify("Please add a title");
       return;
     }
     if (!category.trim()) {
-      Alert.alert("Please add a category", "The category is what we match people on.");
+      notify("Please add a category", "The category is what we match people on.");
       return;
     }
     if (!user) return;
@@ -187,8 +233,13 @@ export default function NewPostScreen() {
       setSubmitting(true);
       const endAt = new Date(startAt.getTime() + durationMins * 60_000).toISOString();
       // Convert display dollars → integer cents at the boundary. The rest
-      // of the app (and backend) only ever speaks cents.
-      const priceCents = Math.round((parseFloat(priceText.trim()) || 0) * 100);
+      // of the app (and backend) only ever speaks cents. Which amount is
+      // meaningful depends on the money mode: "paid" carries an hourly rate,
+      // "budget" carries a total, free/split carry none.
+      const priceCents =
+        priceMode === "paid" ? Math.round((parseFloat(priceText.trim()) || 0) * 100) : 0;
+      const budgetCents =
+        priceMode === "budget" ? Math.round((parseFloat(budgetText.trim()) || 0) * 100) : 0;
       const feeCents = Math.round((parseFloat(feeText) || 0) * 100);
       const content = {
         kind,
@@ -199,7 +250,9 @@ export default function NewPostScreen() {
         skillMode,
         skillLevel: skillMode === "any" ? undefined : skillLevel,
         description: desc.trim() || undefined,
+        priceMode,
         priceCentsPerHour: priceCents,
+        budgetCents,
         cancellationFeeCents: feeCents,
         seats,
         startAt: startAt.toISOString(),
@@ -219,7 +272,7 @@ export default function NewPostScreen() {
       // network. Prefer the Supabase/PostgREST message when present.
       const msg =
         e?.message || e?.error_description || e?.details || "Please try again.";
-      Alert.alert(isEditing ? "Couldn't save" : "Couldn't post", String(msg));
+      notify(isEditing ? "Couldn't save" : "Couldn't post", String(msg));
     } finally {
       setSubmitting(false);
     }
@@ -262,65 +315,60 @@ export default function NewPostScreen() {
           keyboardDismissMode="on-drag"
           automaticallyAdjustKeyboardInsets
         >
-          {/* Kind — spec 0.1: dual-role accounts. */}
+          {/* Kind — spec 0.1: dual-role accounts, now three-way. Stacked rows
+              (not side-by-side) so each intent's blurb reads clearly and the
+              accent colour matches the chip shown later on the map. */}
           <FieldLabel>I am…</FieldLabel>
-          <View className="flex-row" style={{ gap: 8 }}>
-            <Pressable
-              onPress={() => setKind("offer")}
-              style={{
-                flex: 1,
-                padding: 12,
-                borderRadius: 12,
-                borderWidth: 1.5,
-                borderColor: kind === "offer" ? colors.brand : colors.line,
-                backgroundColor: kind === "offer" ? "rgba(255,107,53,0.08)" : colors.surface,
-              }}
-            >
-              <View className="flex-row items-center">
-                <Ionicons
-                  name="megaphone-outline"
-                  size={16}
-                  color={kind === "offer" ? colors.brand : colors.ink}
-                />
-                <Text
-                  className="ml-2 font-bold"
-                  style={{ color: kind === "offer" ? colors.brand : colors.ink }}
+          <View style={{ gap: 8 }}>
+            {(["offer", "seek", "partner"] as PostKind[]).map((k) => {
+              const meta = postKindMeta(k);
+              const active = kind === k;
+              return (
+                <Pressable
+                  key={k}
+                  onPress={() => onChangeKind(k)}
+                  className="flex-row items-center"
+                  style={{
+                    padding: 12,
+                    borderRadius: 12,
+                    borderWidth: 1.5,
+                    borderColor: active ? meta.color : colors.line,
+                    backgroundColor: active ? meta.color + "14" : colors.surface,
+                  }}
                 >
-                  Offering
-                </Text>
-              </View>
-              <Text className="text-[11px] text-ink-muted mt-1 leading-4">
-                I'll host this — others sign up to join me.
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setKind("seek")}
-              style={{
-                flex: 1,
-                padding: 12,
-                borderRadius: 12,
-                borderWidth: 1.5,
-                borderColor: kind === "seek" ? colors.brand : colors.line,
-                backgroundColor: kind === "seek" ? "rgba(255,107,53,0.08)" : colors.surface,
-              }}
-            >
-              <View className="flex-row items-center">
-                <Ionicons
-                  name="hand-right-outline"
-                  size={16}
-                  color={kind === "seek" ? colors.brand : colors.ink}
-                />
-                <Text
-                  className="ml-2 font-bold"
-                  style={{ color: kind === "seek" ? colors.brand : colors.ink }}
-                >
-                  Looking for
-                </Text>
-              </View>
-              <Text className="text-[11px] text-ink-muted mt-1 leading-4">
-                I'm the customer — someone else hosts.
-              </Text>
-            </Pressable>
+                  <View
+                    style={{
+                      width: 34,
+                      height: 34,
+                      borderRadius: 17,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: active ? meta.color : colors.surfaceSoft,
+                    }}
+                  >
+                    <Ionicons
+                      name={meta.icon as any}
+                      size={17}
+                      color={active ? "white" : colors.inkMuted}
+                    />
+                  </View>
+                  <View className="flex-1 ml-3">
+                    <Text
+                      className="font-bold text-sm"
+                      style={{ color: active ? meta.color : colors.ink }}
+                    >
+                      {meta.label}
+                    </Text>
+                    <Text className="text-[11px] text-ink-muted mt-0.5 leading-4">
+                      {meta.blurb}
+                    </Text>
+                  </View>
+                  {active ? (
+                    <Ionicons name="checkmark-circle" size={18} color={meta.color} />
+                  ) : null}
+                </Pressable>
+              );
+            })}
           </View>
 
           {/* Format — explicit, not seat-derived. */}
@@ -541,26 +589,36 @@ export default function NewPostScreen() {
             </Text>
           )}
 
-          {/* Title */}
-          <FieldLabel>Title</FieldLabel>
+          {/* Title — REQUIRED and length-capped. It's the headline shown on the
+              Discover cards, so it must be present and short enough to render in
+              full on a compact row. */}
+          <View className="flex-row items-center justify-between mt-5 mb-2">
+            <Text className="text-sm font-semibold text-ink">
+              Title <Text style={{ color: colors.brand }}>*</Text>
+            </Text>
+            <Text className="text-xs text-ink-muted">
+              {title.length}/{TITLE_MAX}
+            </Text>
+          </View>
           <Input
             value={title}
             onChangeText={setTitle}
             placeholder="e.g. Looking for a 3.0 tennis hitting partner"
+            maxLength={TITLE_MAX}
           />
 
-          {/* Description */}
-          <FieldLabel>Description</FieldLabel>
+          {/* Description — OPTIONAL. Can be skipped entirely. */}
+          <FieldLabel>Description (optional)</FieldLabel>
           <Input
             value={desc}
             onChangeText={setDesc}
-            placeholder="What level, what you're working on, any notes…"
+            placeholder="Optional — level, what you're working on, any notes…"
             multiline
           />
 
-          {/* Date + Time */}
+          {/* Date + Time — day / hour / minute wheels, bounded to 6 AM–10 PM. */}
           <FieldLabel>Starts</FieldLabel>
-          <DateTimePickerField value={startAt} onChange={setStartAt} minimumDate={new Date()} />
+          <DateTimeWheels value={startAt} onChange={setStartAt} />
 
           {/* Duration slider */}
           <View className="flex-row items-center justify-between mt-5 mb-1">
@@ -657,28 +715,83 @@ export default function NewPostScreen() {
             </>
           ) : null}
 
-          {/* Pricing */}
-          <FieldLabel>Pricing</FieldLabel>
-          <View className="flex-row" style={{ gap: 10 }}>
-            <View className="flex-1">
-              <Text className="text-xs text-ink-muted mb-1">Price ($ / hour)</Text>
+          {/* Money expectation — structured & upfront (spec) instead of buried
+              in the description. Drives the money badge on the Discover map. */}
+          <FieldLabel>Money</FieldLabel>
+          <View className="flex-row flex-wrap" style={{ gap: 8 }}>
+            {(
+              [
+                { value: "paid", label: "Paid", icon: "cash-outline", color: colors.accentBlue },
+                { value: "budget", label: "Budget", icon: "wallet-outline", color: colors.accentPurple },
+                { value: "free", label: "Free", icon: "gift-outline", color: "#138C5E" },
+                { value: "split", label: "Split", icon: "swap-horizontal-outline", color: colors.brand },
+              ] as { value: PriceMode; label: string; icon: keyof typeof Ionicons.glyphMap; color: string }[]
+            ).map((opt) => {
+              const active = priceMode === opt.value;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setPriceMode(opt.value)}
+                  className="flex-row items-center"
+                  style={{
+                    // Two per row: (100% - 8px gap) / 2.
+                    width: "48%",
+                    paddingVertical: 10,
+                    paddingHorizontal: 12,
+                    borderRadius: 12,
+                    borderWidth: 1.5,
+                    borderColor: active ? opt.color : colors.line,
+                    backgroundColor: active ? opt.color + "14" : colors.surface,
+                  }}
+                >
+                  <Ionicons name={opt.icon} size={16} color={active ? opt.color : colors.inkMuted} />
+                  <Text
+                    className="ml-2 font-bold text-sm"
+                    style={{ color: active ? opt.color : colors.ink }}
+                  >
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          {priceMode === "paid" ? (
+            <View className="mt-3">
+              <Text className="text-xs text-ink-muted mb-1">Rate ($ / hour)</Text>
               <Input
                 value={priceText}
                 onChangeText={setPriceText}
-                placeholder="Empty = Free"
+                placeholder="e.g. 20"
                 keyboardType="numeric"
               />
             </View>
-            <View className="flex-1">
-              <Text className="text-xs text-ink-muted mb-1">Cancellation fee ($)</Text>
+          ) : priceMode === "budget" ? (
+            <View className="mt-3">
+              <Text className="text-xs text-ink-muted mb-1">Willing to pay ($ total)</Text>
               <Input
-                value={feeText}
-                onChangeText={setFeeText}
-                placeholder="0"
+                value={budgetText}
+                onChangeText={setBudgetText}
+                placeholder="e.g. 50"
                 keyboardType="numeric"
               />
             </View>
-          </View>
+          ) : (
+            <Text className="text-[11px] text-ink-muted mt-2 leading-4">
+              {priceMode === "split"
+                ? "You'll split shared costs (court fee, gas, groceries) evenly."
+                : "No money changes hands — free or a mutual exchange."}
+            </Text>
+          )}
+
+          {/* Cancellation fee — kept separate from the money expectation. */}
+          <FieldLabel>Cancellation fee ($)</FieldLabel>
+          <Input
+            value={feeText}
+            onChangeText={setFeeText}
+            placeholder="0"
+            keyboardType="numeric"
+          />
           <Text className="text-[11px] text-ink-muted mt-2 leading-4">
             All fees are $0 during pilot. 12 h free cancellation; later cancellations charge the
             canceler; weather-related cancellations don't charge anyone.
@@ -707,6 +820,7 @@ function Input(props: {
   placeholder?: string;
   keyboardType?: "default" | "numeric" | "email-address";
   multiline?: boolean;
+  maxLength?: number;
 }) {
   return (
     <TextInput
@@ -716,6 +830,7 @@ function Input(props: {
       placeholderTextColor={colors.inkMuted}
       keyboardType={props.keyboardType ?? "default"}
       multiline={props.multiline}
+      maxLength={props.maxLength}
       style={{
         backgroundColor: colors.surfaceSoft,
         borderRadius: 12,

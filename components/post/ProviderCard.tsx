@@ -1,9 +1,10 @@
 import { View, Text, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Avatar } from "../common/Avatar";
-import { colors } from "../../constants/theme";
+import { AvatarStack } from "../common/AvatarStack";
+import { KindCorner } from "./KindCorner";
 import type { Post, User } from "../../services/types";
-import { formatHourlyPrice, describeSkillRequirement } from "../../services/types";
+import { moneyBadge, dayPrefix, isGroupPost, isPostIncoming } from "../../services/types";
 
 type Props = {
   post: Post;
@@ -13,80 +14,77 @@ type Props = {
 
 function formatTime(iso: string) {
   const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
-function relativeTime(iso: string) {
-  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (mins < 60) return `${mins} mins ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours} hours ago`;
-  return `${Math.round(hours / 24)} days ago`;
-}
-
+// Compact list row for the Discover cluster popup. The headline is the activity
+// TITLE (not member names) so the row reads at a glance even when several
+// avatars are stacked; the full title is shown (no truncation) so people
+// understand what the post is. Tags/badges/skill chips were removed to keep the
+// list as thin and scannable as possible — those details live in the detail view.
 export function ProviderCard({ post, author, onPress }: Props) {
-  const price = formatHourlyPrice(post.priceCentsPerHour);
-  const priceColor = colors.accentBlue;
+  const money = moneyBadge(post);
+  const group = isGroupPost(post) && (post.participants?.length ?? 0) > 1;
+  const members = post.participants ?? [author];
+  // Already-agreed (not yet started) 1-on-1 posts read greyed + carry an
+  // "Upcoming" tag instead of the money badge, so the list mirrors the map's
+  // grey pin. Group activities are never "incoming" (they keep filling seats).
+  const incoming = isPostIncoming(post);
 
   return (
     <Pressable
       onPress={onPress}
-      className="bg-surface rounded-2xl p-3 mb-3 flex-row items-center"
+      className="bg-surface rounded-xl px-3 py-2.5 flex-row items-center overflow-hidden"
       style={{
+        opacity: incoming ? 0.65 : 1,
         shadowColor: "#000",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 6,
-        elevation: 3,
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.07,
+        shadowRadius: 4,
+        elevation: 2,
       }}
     >
-      <Avatar uri={author.avatarUrl} size={56} />
-      <View className="flex-1 ml-3">
-        <View className="flex-row items-center justify-between">
-          <Text className="text-base font-bold text-ink">{author.name}</Text>
-          <Text className="text-sm font-semibold" style={{ color: priceColor }}>
-            {price}
+      {/* Post kind lives only in the folded top-left corner (Offer / Seek /
+          Partner) so its colour never collides with the content. */}
+      <KindCorner kind={post.kind} size={30} iconSize={11} />
+      {group ? (
+        // Compact row: cap the stack to 2 faces + "+N" and overlap tightly so
+        // the avatars never crowd out the title column (which must stay wide
+        // enough to wrap the title on word boundaries, not per-character).
+        <AvatarStack users={members} size={34} max={2} overlap={13} />
+      ) : (
+        <Avatar uri={author.avatarUrl} size={42} />
+      )}
+      <View className="flex-1 ml-3" style={{ minWidth: 0 }}>
+        {/* Activity title — the primary read. Shown in full so the post is
+            self-explanatory. */}
+        <Text className="text-sm font-bold text-ink">{post.title}</Text>
+        <Text className="text-xs text-ink-muted mt-0.5">
+          {dayPrefix(post.startAt)} {formatTime(post.startAt)} - {formatTime(post.endAt)}
+        </Text>
+      </View>
+      {/* Upcoming tag (agreed, not started) OR the money badge — instant read. */}
+      {incoming ? (
+        <View
+          className="flex-row items-center rounded-full px-2 py-0.5 ml-2"
+          style={{ backgroundColor: "rgba(120,120,120,0.16)" }}
+        >
+          <Ionicons name="time-outline" size={12} color="#6B6B6B" />
+          <Text className="text-xs font-bold ml-1" style={{ color: "#6B6B6B" }}>
+            Upcoming
           </Text>
         </View>
-        <Text className="text-sm text-ink-muted mt-0.5">
-          {formatTime(post.startAt)} - {formatTime(post.endAt)}
-        </Text>
-        <View className="flex-row items-center mt-1.5">
-          {author.level ? (
-            <View className="bg-brand-100 rounded-md px-2 py-0.5 mr-2">
-              <Text className="text-xs text-brand-700 font-medium">{author.level}</Text>
-            </View>
-          ) : null}
-          {post.badges?.map((b) => (
-            <View key={b} className="bg-accent-blue/15 rounded-md px-2 py-0.5 mr-2">
-              <Text className="text-xs font-medium" style={{ color: colors.accentBlue }}>
-                {b}
-              </Text>
-            </View>
-          ))}
-          {(() => {
-            const req = describeSkillRequirement(post);
-            return req ? (
-              <View
-                className="flex-row items-center rounded-md px-2 py-0.5 mr-2"
-                style={{ backgroundColor: "rgba(124,108,240,0.15)" }}
-              >
-                <Ionicons name="ribbon-outline" size={11} color={colors.accentPurple} />
-                <Text className="text-xs font-medium ml-1" style={{ color: colors.accentPurple }}>
-                  {req}
-                </Text>
-              </View>
-            ) : null;
-          })()}
+      ) : (
+        <View
+          className="flex-row items-center rounded-full px-2 py-0.5 ml-2"
+          style={{ backgroundColor: money.color + "1F" }}
+        >
+          <Ionicons name={money.icon as any} size={12} color={money.color} />
+          <Text className="text-xs font-bold ml-1" style={{ color: money.color }}>
+            {money.label}
+          </Text>
         </View>
-        <Text className="text-[11px] text-ink-muted mt-1">Posted {relativeTime(post.postedAt)}</Text>
-      </View>
-      <Pressable
-        onPress={onPress}
-        className="ml-2 w-9 h-9 rounded-full bg-brand items-center justify-center"
-      >
-        <Ionicons name="add" size={20} color="white" />
-      </Pressable>
+      )}
     </Pressable>
   );
 }

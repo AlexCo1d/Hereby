@@ -3,13 +3,16 @@
 import { mockApi } from "./mock";
 import type {
   CancelReason,
-  CheckInChannel,
   ChatThread,
   DiscoverFilter,
   Message,
+  Notification,
   Order,
   Post,
+  PublicNote,
+  PublicNoteReplyTo,
   Rating,
+  UnreadCounts,
   User,
 } from "./types";
 
@@ -36,6 +39,8 @@ export type HerebyApi = {
         | "description"
         | "tags"
         | "priceCentsPerHour"
+        | "priceMode"
+        | "budgetCents"
         | "cancellationFeeCents"
         | "skillLevel"
         | "skillMode"
@@ -57,12 +62,24 @@ export type HerebyApi = {
   // orders ("My" tab)
   listMyOrders(): Promise<Order[]>;
   getOrder(id: string): Promise<Order | null>;
-  /** Place an order on a post — used by the "I'll take that!" button. */
+  /** Place an order on a post — used by the "I'll take that! / I can help /
+   *  I'm in" buttons. Creates a PENDING request the post author must accept. */
   createOrder(input: { post: Post; takerUser: User }): Promise<Order>;
-  /** Flip one of the 3 check-in channels to confirmed for the given order. */
-  advanceCheckIn(orderId: string, channel: CheckInChannel): Promise<Order>;
-  /** Reset a channel back to pending (mostly for the demo UI). */
-  resetCheckIn(orderId: string, channel: CheckInChannel): Promise<Order>;
+  /** Post author accepts a pending request → order becomes "upcoming". */
+  acceptOrder(orderId: string): Promise<Order>;
+  /** Decline a pending request (author rejects, or taker withdraws) →
+   *  order is cancelled and the seat is freed. */
+  declineOrder(orderId: string): Promise<Order>;
+  /** Begin the viewer's own location check-in: flips their side to the
+   *  transient `locating` state while the device queries GPS in the
+   *  background. Pair with `resolveLocationCheckIn`. */
+  startLocationCheckIn(orderId: string): Promise<Order>;
+  /** GPS matched the viewer within ~100m of the venue → confirm their own
+   *  presence. Unlocks manual check-in for helping others. */
+  resolveLocationCheckIn(orderId: string): Promise<Order>;
+  /** After the viewer is present, vouch for another roster member (the
+   *  counterpart or a group participant) who hasn't checked in yet. */
+  manualCheckIn(orderId: string, targetUserId: string): Promise<Order>;
   /** Cancel an order before it starts (respects the 12-h policy at UI layer). */
   cancelOrder(orderId: string, by: string, reason: CancelReason): Promise<Order>;
   /** Manually mark an order completed (used when "Done" is tapped after the end time). */
@@ -96,8 +113,20 @@ export type HerebyApi = {
    *  event posts, contacting the host pre-order IS allowed (asking about a
    *  public event isn't cold-DMing a stranger), so the thread opens. */
   openThreadWith(input: { withUserId: string; postId?: string }): Promise<ChatThread>;
-  /** Persist a message. Backend re-checks thread access before writing. */
-  sendMessage(threadId: string, text: string): Promise<Message>;
+  /** Open (or fetch existing) the single GROUP chat room for a group
+   *  activity/event post. Every participant (host + all joiners) shares one
+   *  room keyed by the post. Idempotent: creating twice returns the same room
+   *  and adds the caller as a member. The caller must be the host or hold a
+   *  non-cancelled order on the post. */
+  openGroupThread(postId: string): Promise<ChatThread>;
+  /** Persist a message. Backend re-checks thread access before writing.
+   *  `imageUrl` (already uploaded via `uploadChatImage`) attaches a photo;
+   *  `text` may be empty for an image-only message. */
+  sendMessage(threadId: string, text: string, imageUrl?: string): Promise<Message>;
+  /** Upload a picked image (local uri) for a chat message and return a URL the
+   *  recipient can load. Mock returns the uri as-is; supabase uploads it to the
+   *  `chat-images` Storage bucket and returns the public URL. */
+  uploadChatImage(localUri: string): Promise<string>;
   /** Mark a thread's unread count to 0 (swipe action on the chat list). */
   markThreadRead(threadId: string): Promise<void>;
   /** Soft-delete a thread from the viewer's inbox (swipe action). The
@@ -110,6 +139,39 @@ export type HerebyApi = {
    *  server throttles to ≤ 1 ping per 5 min per order — the client should
    *  surface a polite "Already pinged recently" if a 429 comes back. */
   pingCounterpart(orderId: string): Promise<Order>;
+
+  // public note — per-post OPEN Q&A (spec: replaces DMs on Discover so nobody
+  // can cold-message the author). Anyone may read/append; saved with the post.
+  /** All public-note messages for a post, oldest-first. */
+  listPublicNotes(postId: string): Promise<PublicNote[]>;
+  /** Append a message to a post's public note. Anyone signed in may post.
+   *  `author` is the current viewer (from the auth store) so the note carries
+   *  their real name/avatar; the supabase backend derives it from the session
+   *  and ignores this hint. `replyTo` quotes an earlier note (long-press →
+   *  reply); the quoted note's author then receives a `public_note_reply`
+   *  notification. */
+  addPublicNote(
+    postId: string,
+    text: string,
+    author?: User,
+    replyTo?: PublicNoteReplyTo,
+  ): Promise<PublicNote>;
+
+  // notifications — in-app inbox (currently public-note replies). Cross-user,
+  // so the supabase backend fills these via a trigger; mock seeds a demo one.
+  /** The viewer's notifications, newest-first. */
+  listNotifications(): Promise<Notification[]>;
+  /** Mark a single notification read (tapped through to its target). */
+  markNotificationRead(id: string): Promise<void>;
+  /** Mark every notification read (e.g. a "mark all" affordance). */
+  markAllNotificationsRead(): Promise<void>;
+  /** Remove a single notification from the viewer's inbox (swipe-to-delete). */
+  deleteNotification(id: string): Promise<void>;
+  /** One-tap declutter: remove every already-read notification for the viewer. */
+  clearReadNotifications(): Promise<void>;
+  /** Unread counts for the Message tab dot + the Chat/Notification sub-tab
+   *  dots. Cheap enough to poll. */
+  getUnreadCounts(): Promise<UnreadCounts>;
 
   // user lookup
   getUser(id: string): Promise<User | null>;

@@ -1,8 +1,44 @@
+import { useEffect } from "react";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Platform } from "react-native";
+import { Platform, View } from "react-native";
 import { colors } from "../../constants/theme";
+import { useUnread } from "../../stores/unread";
+
+/** An Ionicon with a small orange unread dot in the top-right corner. */
+function IconWithDot({
+  name,
+  size,
+  color,
+  showDot,
+}: {
+  name: keyof typeof Ionicons.glyphMap;
+  size: number;
+  color: string;
+  showDot: boolean;
+}) {
+  return (
+    <View>
+      <Ionicons name={name} size={size} color={color} />
+      {showDot ? (
+        <View
+          style={{
+            position: "absolute",
+            top: -2,
+            right: -3,
+            width: 9,
+            height: 9,
+            borderRadius: 5,
+            backgroundColor: colors.brand,
+            borderWidth: 1.5,
+            borderColor: colors.surface,
+          }}
+        />
+      ) : null}
+    </View>
+  );
+}
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
@@ -10,17 +46,33 @@ export default function TabsLayout() {
   // Minimum 12px gap even on devices without an inset, to avoid edge mis-taps.
   const bottomPad = Math.max(insets.bottom, 12);
 
+  // Poll unread counts so the Message-tab dot lights up when a cross-user event
+  // (e.g. someone replies to your note) lands, without needing a manual reload.
+  const refresh = useUnread((s) => s.refresh);
+  const messageUnread = useUnread((s) => s.chat > 0 || s.notifications > 0);
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 15000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.brand,
         tabBarInactiveTintColor: colors.inkMuted,
+        // Force below-icon labels on every viewport (react-navigation would
+        // otherwise switch to beside-icon on very wide screens).
+        tabBarLabelPosition: "below-icon",
         tabBarStyle: {
           backgroundColor: colors.surface,
           borderTopColor: colors.line,
-          height: 60 + bottomPad,
-          paddingTop: 8,
+          // Enough vertical room for the 28px icon + label to sit ABOVE the
+          // bar's bottom edge. If too short, the below-icon label overflows
+          // off-screen and disappears (the mobile-web "no labels" bug).
+          height: 70 + bottomPad,
+          paddingTop: 6,
           paddingBottom: bottomPad,
           // soft shadow above the bar so it visually floats
           ...Platform.select({
@@ -34,8 +86,8 @@ export default function TabsLayout() {
             default: {},
           }),
         },
-        tabBarItemStyle: { paddingVertical: 4 },
-        tabBarLabelStyle: { fontSize: 11, fontWeight: "500", marginTop: 2 },
+        tabBarItemStyle: { paddingVertical: 2 },
+        tabBarLabelStyle: { fontSize: 11, fontWeight: "500", marginTop: 0 },
       }}
     >
       <Tabs.Screen
@@ -59,9 +111,14 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="chat"
         options={{
-          title: "Chat",
+          title: "Message",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="chatbubble-outline" size={size} color={color} />
+            <IconWithDot
+              name="chatbubble-outline"
+              size={size}
+              color={color}
+              showDot={messageUnread}
+            />
           ),
         }}
       />

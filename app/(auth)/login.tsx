@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
+import { View, Text, TextInput, Pressable, KeyboardAvoidingView, Platform, Image } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -10,6 +10,8 @@ import { colors } from "../../constants/theme";
 
 export default function LoginScreen() {
   const login = useAuth((s) => s.login);
+  const devLogin = useAuth((s) => s.devLogin);
+  const devLoginEnabled = useAuth((s) => s.devLoginEnabled);
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +34,26 @@ export default function LoginScreen() {
     }
   };
 
+  // DEV ONLY: skip the OTP step and jump straight in.
+  const onDevLogin = async () => {
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed.includes("@")) {
+      setError("Please enter a valid email address");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      await devLogin(trimmed);
+      const onboarded = useAuth.getState().hasFinishedOnboarding;
+      router.replace(onboarded ? "/(tabs)/discover" : ("/(onboarding)/profile" as any));
+    } catch (e: any) {
+      setError(e?.message ?? "Dev login failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const willBeBrowseOnly = email.includes("@") && !isEduEmail(email.trim());
 
   return (
@@ -40,23 +62,15 @@ export default function LoginScreen() {
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View className="flex-1 px-6 pt-10">
+        <View className="flex-1 px-6 pt-10" style={{ width: "100%", maxWidth: 440, alignSelf: "center" }}>
           {/* Brand */}
           <View className="items-center mb-10">
-            <View
-              style={{
-                width: 64,
-                height: 64,
-                borderRadius: 32,
-                backgroundColor: colors.brand,
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Ionicons name="location" size={32} color="white" />
-            </View>
+            <Image
+              source={require("../../assets/icon.png")}
+              style={{ width: 72, height: 72, borderRadius: 18 }}
+            />
             <Text className="text-2xl font-bold text-ink mt-3">Hereby</Text>
-            <Text className="text-sm text-ink-muted mt-1">Local Help, Right Here.</Text>
+            <Text className="text-sm text-ink-muted mt-1">Your campus, on demand!</Text>
           </View>
 
           <Text className="text-xl font-bold text-ink mb-1">Sign in or create account</Text>
@@ -75,7 +89,7 @@ export default function LoginScreen() {
             <TextInput
               value={email}
               onChangeText={setEmail}
-              placeholder="you@ucf.edu"
+              placeholder="Enter your .edu email"
               placeholderTextColor={colors.inkMuted}
               autoCapitalize="none"
               autoComplete="email"
@@ -109,6 +123,15 @@ export default function LoginScreen() {
           <View className="mt-6">
             <Button label="Continue" onPress={onSubmit} loading={loading} />
           </View>
+
+          {devLoginEnabled ? (
+            <Pressable onPress={onDevLogin} className="mt-4 flex-row items-center justify-center">
+              <Ionicons name="flash" size={14} color={colors.brand} />
+              <Text className="text-xs font-semibold ml-1" style={{ color: colors.brand }}>
+                Dev: log in without code
+              </Text>
+            </Pressable>
+          ) : null}
 
           <Text className="text-xs text-ink-muted text-center mt-6 leading-4">
             By continuing you agree to our Terms &amp; Privacy Policy.

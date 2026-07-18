@@ -7,9 +7,11 @@ import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 
 import { Avatar } from "../common/Avatar";
+import { KindCorner } from "./KindCorner";
 import { colors } from "../../constants/theme";
 import { categoryVisual } from "../../services/categoryVisuals";
 import type { Post, User } from "../../services/types";
+import { moneyBadge } from "../../services/types";
 
 type Props = {
   post: Post;
@@ -32,8 +34,8 @@ function fmtWhen(start: string, end: string) {
     ? "Today"
     : isTomorrow
       ? "Tomorrow"
-      : s.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-  const t = (d: Date) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      : s.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  const t = (d: Date) => d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   return `${dateLabel} · ${t(s)} – ${t(e)}`;
 }
 
@@ -41,7 +43,7 @@ export function EventCard({ post, host, onPress, joined }: Props) {
   return (
     <Pressable
       onPress={onPress}
-      className="mb-4 rounded-2xl overflow-hidden bg-surface border border-ink-line"
+      className="mb-4 rounded-2xl overflow-hidden border border-ink-line bg-surface"
       style={{
         shadowColor: "#000",
         shadowOffset: { width: 0, height: 2 },
@@ -50,6 +52,8 @@ export function EventCard({ post, host, onPress, joined }: Props) {
         elevation: 2,
       }}
     >
+      {/* Post kind — folded top-left corner, the only kind-coloured element. */}
+      <KindCorner kind={post.kind} size={44} iconSize={15} />
       <View style={{ position: "relative" }}>
         {/* Every post gets a picture: its own cover if set, otherwise a
             category-appropriate stock photo (basketball → hoops, tennis →
@@ -60,13 +64,13 @@ export function EventCard({ post, host, onPress, joined }: Props) {
           contentFit="cover"
         />
         {/* Format chip — distinguishes a casual Activity from an organized
-            Event at a glance (top-left of the cover). */}
+            Event at a glance. Sits top-right so the kind corner owns top-left. */}
         {post.format === "activity" || post.format === "event" ? (
           <View
             style={{
               position: "absolute",
               top: 10,
-              left: 10,
+              right: 10,
               flexDirection: "row",
               alignItems: "center",
               paddingHorizontal: 9,
@@ -86,14 +90,14 @@ export function EventCard({ post, host, onPress, joined }: Props) {
           </View>
         ) : null}
 
-        {/* "You're going" overlay — sits in the top-right of the cover so it
-            scans at a glance from the list. */}
+        {/* "You're going" overlay — bottom-left of the cover, clear of the
+            kind corner (top-left) and the format chip (top-right). */}
         {joined ? (
           <View
             style={{
               position: "absolute",
-              top: 10,
-              right: 10,
+              bottom: 10,
+              left: 10,
               flexDirection: "row",
               alignItems: "center",
               paddingHorizontal: 10,
@@ -162,15 +166,20 @@ export function EventCard({ post, host, onPress, joined }: Props) {
           <View className="flex-row items-center mt-2.5">
             <Avatar uri={host.avatarUrl} size={22} />
             <Text className="text-xs text-ink ml-2 font-semibold">{host.name}</Text>
-            {post.priceCentsPerHour === 0 ? (
-              <Text className="text-xs ml-auto font-bold" style={{ color: colors.brand }}>
-                FREE
-              </Text>
-            ) : (
-              <Text className="text-xs ml-auto font-bold" style={{ color: colors.accentBlue }}>
-                ${post.priceCentsPerHour / 100}/hr
-              </Text>
-            )}
+            {(() => {
+              const money = moneyBadge(post);
+              return (
+                <View
+                  className="flex-row items-center ml-auto rounded-full px-2 py-0.5"
+                  style={{ backgroundColor: money.color + "1F" }}
+                >
+                  <Ionicons name={money.icon as any} size={12} color={money.color} />
+                  <Text className="text-xs font-bold ml-1" style={{ color: money.color }}>
+                    {money.label}
+                  </Text>
+                </View>
+              );
+            })()}
           </View>
         ) : null}
       </View>

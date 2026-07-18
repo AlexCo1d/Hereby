@@ -24,11 +24,54 @@ const IS_SUPABASE = process.env.EXPO_PUBLIC_DATA_SOURCE === "supabase";
 // Leave unset / "false" for real behaviour.
 const ALLOW_ANY_EMAIL = process.env.EXPO_PUBLIC_ALLOW_ANY_EMAIL === "true";
 
+// DEV ONLY. When "true", a "log in without code" path is exposed that mints a
+// session straight from an email, skipping the OTP step entirely. Handy when
+// email delivery isn't set up (supabase OTP is rate-limited) or for fast
+// local/LAN testing on a phone. NEVER enable in a shipped .edu build — keep it
+// in `.env.local` only, which the deploy build omits.
+const DEV_LOGIN = process.env.EXPO_PUBLIC_DEV_LOGIN === "true";
+
 // Lazy accessor so the supabase client (and its createClient call) is only
 // evaluated in supabase mode — mock mode never touches it.
 function sb() {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   return require("../services/supabase/client").supabase;
+}
+
+// Lazy accessor for the mock backend (only touched in mock mode) so the
+// login can register the viewer + resolve the mock user id.
+function mock() {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return require("../services/mock");
+}
+
+// Build the mock-mode AuthUser for a login email. A normal email is the demo
+// viewer "me" (id "me", blank name → onboarding, empty interests — identical to
+// the original single-user behaviour). A seeded alias (e.g. "marcus@…") logs in
+// AS that seeded person so the host side of flows can be tested on one device.
+function buildMockAuthUser(email: string): AuthUser {
+  const viewer = mock().mockLogin(email); // registers + sets current viewer
+  const isMe = viewer.id === "me";
+  const isEdu = EDU_RE.test(email);
+  return {
+    id: viewer.id,
+    email,
+    // "me" keeps a blank name so onboarding still collects one; an impersonated
+    // seeded user carries their real name and skips straight in.
+    name: isMe ? "" : viewer.name,
+    avatarUrl: viewer.avatarUrl || generatedAvatar(email),
+    campusId: campusFromEmail(email),
+    mode: ALLOW_ANY_EMAIL || isEdu ? "verified" : "browse_only",
+    customTags: [],
+    interestIds: isMe ? [] : (viewer.interests ?? []),
+    tagLevels: {},
+    radiusMiles: 5,
+    bio: isMe ? "" : (viewer.bio ?? ""),
+    ratingReceived: isMe ? 0 : viewer.rating,
+    ratingReceivedCount: isMe ? 0 : viewer.ratingCount,
+    ratingGiven: 0,
+    ratingGivenCount: 0,
+  };
 }
 
 export type AuthMode = "verified" | "browse_only";
@@ -77,6 +120,12 @@ type AuthState = {
    *  Supabase for an instant session. */
   signInWithPassword: (email: string, password: string) => Promise<void>;
   logout: () => void;
+  /** DEV ONLY (gated by EXPO_PUBLIC_DEV_LOGIN). Mint a session directly from an
+   *  email, skipping OTP. Mock mode sets the local "me" user; supabase mode
+   *  signs in via password so RLS still gets a real session. */
+  devLogin: (email: string) => Promise<void>;
+  /** Whether the dev-login bypass is enabled (drives the login-screen button). */
+  devLoginEnabled: boolean;
   /** Restore the user from an existing supabase session on app boot. No-op in
    *  mock mode. Call once from the root layout. */
   initAuth: () => Promise<void>;
@@ -193,31 +242,31 @@ export const useAuth = create<AuthState>()(
             return;
           }
 
-          // Mock OTP: any 6-digit code passes in dev. User id pinned to "me".
+          // Mock OTP: any 6-digit code passes in dev. A normal email is the
+          // demo viewer "me"; a seeded alias impersonates that account.
           if (!/^\d{6}$/.test(code)) throw new Error("Code must be 6 digits");
-          const isEdu = EDU_RE.test(email);
-          set({
-            pendingEmail: null,
-            user: {
-              id: "me",
-              email,
-              // Blank name → onboarding's profile step collects a real one
-              // (no email-prefix usernames).
-              name: "",
-              avatarUrl: generatedAvatar(email),
-              campusId: campusFromEmail(email),
-              mode: ALLOW_ANY_EMAIL || isEdu ? "verified" : "browse_only",
-              customTags: [],
-              interestIds: [],
-              tagLevels: {},
-              radiusMiles: 5,
-              bio: "",
-              ratingReceived: 0,
-              ratingReceivedCount: 0,
-              ratingGiven: 0,
-              ratingGivenCount: 0,
-            },
-          });
+          set({ pendingEmail: null, user: buildMockAuthUser(email) });
+        },
+
+        devLoginEnabled: DEV_LOGIN,
+
+        async devLogin(email) {
+          if (!DEV_LOGIN) throw new Error("Dev login is disabled");
+          const trimmed = email.trim().toLowerCase();
+          if (!trimmed.includes("@")) throw new Error("Enter a valid email");
+          set({ pendingEmail: trimmed });
+
+          if (IS_SUPABASE) {
+            // Get a real session so RLS-gated reads/writes work. Requires
+            // "Confirm email" OFF in Supabase → Auth → Providers → Email.
+            // Deterministic per-email password keeps repeat logins consistent.
+            await get().signInWithPassword(trimmed, `dev-${trimmed}`);
+            return;
+          }
+
+          // Mock: mint the session immediately (same resolution as verifyOtp —
+          // normal email → "me", seeded alias → that account).
+          set({ pendingEmail: null, user: buildMockAuthUser(trimmed) });
         },
 
         async signInWithPassword(email, password) {
@@ -261,7 +310,13 @@ export const useAuth = create<AuthState>()(
         },
 
         async initAuth() {
-          if (!IS_SUPABASE) return;
+          if (!IS_SUPABASE) {
+            // Mock module memory resets on reload; re-point the viewer at the
+            // persisted account so its projected data stays consistent.
+            const u = get().user;
+            if (u) mock().setViewerById(u.id);
+            return;
+          }
           const { data } = await sb().auth.getSession();
           const session = data?.session;
           if (!session) {
@@ -373,13 +428,16 @@ export const useAuth = create<AuthState>()(
       version: 1,
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (s) => ({ user: s.user, hasFinishedOnboarding: s.hasFinishedOnboarding }),
-      // Mock-only migration: older builds stored a per-session user id; the
-      // mock backend treats the viewer as "me" everywhere, so normalize it.
-      // Skipped in supabase mode, where ids are real UUIDs that initAuth() will
-      // reconcile against the live session.
+      // Mock-only migration: older builds stored an opaque per-session id.
+      // Normalize a truly-unknown legacy id back to the demo viewer "me", but
+      // preserve the mock identities we now support (seeded "u_*" impersonation
+      // and "mock_*" accounts). Skipped in supabase mode, where ids are real
+      // UUIDs that initAuth() reconciles against the live session.
       migrate: (persisted: any) => {
-        if (!IS_SUPABASE && persisted?.user && persisted.user.id !== "me") {
-          persisted.user = { ...persisted.user, id: "me" };
+        if (!IS_SUPABASE && persisted?.user) {
+          const id: string = persisted.user.id ?? "";
+          const known = id === "me" || id.startsWith("u_") || id.startsWith("mock_");
+          if (!known) persisted.user = { ...persisted.user, id: "me" };
         }
         return persisted;
       },

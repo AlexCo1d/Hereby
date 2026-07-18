@@ -76,13 +76,20 @@ Place an order on a post. Backend MUST:
 - **Callers**: `app/provider/[id].tsx`.
 - **Supabase**: transactional RPC `place_order(post_id)`. Stripe call in Edge Function before the insert.
 
-### `advanceCheckIn(orderId, channel: "location"|"qr"|"peer"): Promise<Order>`
-Marks one of the viewer's three channels as `confirmed`. **`qr` is mutual** — flipping it also flips the counterpart's qr (proof of physical meet). Also auto-bumps status: `upcoming → checking_in` on any progress, `→ in_progress` when both parties have ≥ 1 channel confirmed.
-- **Callers**: `app/order/[id].tsx` (via `CheckInCard.onPress`).
-- **Supabase**: writes `check_in_attempts` then runs a trigger that recomputes order status.
+### `startLocationCheckIn(orderId): Promise<Order>`
+Begins the viewer's own location check-in: flips their party to the transient `locating` state (orange button) while the device matches GPS against the venue in the background. Bumps `upcoming → checking_in`. Pair with `resolveLocationCheckIn`.
+- **Callers**: `app/order/[id].tsx` (Location `CheckInCard.onPress`).
+- **Supabase**: `start_location_check_in(p_order_id)`.
 
-### `resetCheckIn(orderId, channel): Promise<Order>`
-Demo-only undo; doesn't bump status. Keep in API for dev/testing.
+### `resolveLocationCheckIn(orderId): Promise<Order>`
+GPS matched the viewer within ~100m → confirms their party (`{status:"confirmed", method:"location"}`, green button) and recomputes status: `→ in_progress` once **everyone** on the roster is present. Unlocks manual check-in for the viewer.
+- **Callers**: `app/order/[id].tsx` (fired ~1.6s after `startLocationCheckIn`).
+- **Supabase**: `resolve_location_check_in(p_order_id)` — server re-validates location.
+
+### `manualCheckIn(orderId, targetUserId): Promise<Order>`
+Lets a present member vouch for another roster member (the counterpart or a group participant). Sets the target to `{status:"confirmed", method:"manual", byUserId}`. Throws if the caller hasn't checked themselves in. Recomputes status via `everyonePresent`.
+- **Callers**: `app/order/[id].tsx` (manual picker modal).
+- **Supabase**: `manual_check_in(p_order_id, p_target_user_id)` — server enforces caller presence.
 
 ### `cancelOrder(orderId, by: string, reason: CancelReason): Promise<Order>`
 Marks `cancelled`. Backend:
@@ -230,7 +237,7 @@ Find every place a screen / hook reaches the API:
 | Post detail | `app/provider/[id].tsx` | `getPost`, `getUser`, `listMyOrders`, `createOrder` |
 | Create post | `app/post/new.tsx` | `createPost` |
 | My orders list | `app/(tabs)/my.tsx` | `sweepAutoComplete`, `listMyOrders`, `rateOrder` |
-| Order detail | `app/order/[id].tsx` | `sweepAutoComplete`, `getOrder`, `advanceCheckIn`, `resetCheckIn`, `cancelOrder`, `completeOrder`, `pingCounterpart`, `openDispute`, `rateOrder` |
+| Order detail | `app/order/[id].tsx` | `sweepAutoComplete`, `getOrder`, `startLocationCheckIn`, `resolveLocationCheckIn`, `manualCheckIn`, `cancelOrder`, `completeOrder`, `pingCounterpart`, `openDispute`, `rateOrder` |
 | Chat list | `app/(tabs)/chat.tsx` | `listThreads` |
 | Chat thread | `app/chat/[id].tsx` | `getThread`, `listMessages` |
 | Profile | `app/profile/index.tsx` | (auth store only) |

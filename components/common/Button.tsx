@@ -2,10 +2,12 @@ import { Pressable, Text, View, ActivityIndicator } from "react-native";
 import { ReactNode } from "react";
 
 type Variant = "primary" | "secondary" | "ghost";
+type Size = "md" | "sm";
 type Props = {
   label: string;
   onPress?: () => void;
   variant?: Variant;
+  size?: Size;
   loading?: boolean;
   disabled?: boolean;
   leftIcon?: ReactNode;
@@ -16,12 +18,16 @@ export function Button({
   label,
   onPress,
   variant = "primary",
+  size = "md",
   loading,
   disabled,
   leftIcon,
   className = "",
 }: Props) {
-  const base = "h-12 rounded-2xl items-center justify-center flex-row px-5";
+  const base =
+    size === "sm"
+      ? "h-10 rounded-xl items-center justify-center flex-row px-3"
+      : "h-12 rounded-2xl items-center justify-center flex-row px-5";
   const bg =
     variant === "primary"
       ? "bg-brand"
@@ -44,7 +50,9 @@ export function Button({
       ) : (
         <>
           {leftIcon ? <View className="mr-2">{leftIcon}</View> : null}
-          <Text className={`${text} font-semibold text-base`}>{label}</Text>
+          <Text numberOfLines={1} className={`${text} font-semibold ${size === "sm" ? "text-sm" : "text-base"}`}>
+            {label}
+          </Text>
         </>
       )}
     </Pressable>

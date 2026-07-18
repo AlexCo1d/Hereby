@@ -3,6 +3,8 @@ import { View, Text, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Pla
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { Image } from "expo-image";
+import * as ImagePicker from "expo-image-picker";
 
 import { Avatar } from "../../components/common/Avatar";
 import { api } from "../../services/api";
@@ -21,6 +23,9 @@ export default function ChatThreadScreen() {
   const insets = useSafeAreaInsets();
   // Keep the input bar above the iOS home indicator / Android nav bar.
   const bottomPad = Math.max(insets.bottom, 12);
+  // Sender lookup for group chats — resolves an incoming message's author to
+  // their avatar/name. Empty for 1-on-1 threads.
+  const senderById = new Map((thread?.members ?? []).map((u) => [u.id, u]));
 
   // Spec 0.9: fetch through `getThread`, which returns null when the viewer
   // has no order linking them to this counterpart. Render a polite
@@ -41,25 +46,49 @@ export default function ChatThreadScreen() {
     })();
   }, [id]);
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text) return;
-    setInput("");
-    // Optimistic append, then persist. On failure, surface and roll back.
+  // Shared optimistic-send path for both text and image messages. Emoji need no
+  // special handling — RN <Text> renders the system emoji font directly.
+  const pushMessage = async (opts: { text?: string; imageUrl?: string }) => {
+    const text = opts.text ?? "";
     const optimistic: Message = {
       id: `local_${Date.now()}`,
       threadId: id,
       fromUserId: myId,
       text,
+      imageUrl: opts.imageUrl,
       sentAt: new Date().toISOString(),
     };
     setMessages((m) => [...m, optimistic]);
     try {
-      await api.sendMessage(id, text);
+      const saved = await api.sendMessage(id, text, opts.imageUrl);
+      // Swap the optimistic row for the persisted one (real id / uploaded url).
+      setMessages((m) => m.map((msg) => (msg.id === optimistic.id ? saved : msg)));
     } catch {
       setMessages((m) => m.filter((msg) => msg.id !== optimistic.id));
-      setInput(text);
+      if (opts.text) setInput(opts.text);
     }
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text) return;
+    setInput("");
+    await pushMessage({ text });
+  };
+
+  const pickAndSendImage = async () => {
+    // Ask once; on web/Android the picker opens without a blocking dialog.
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) return;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      quality: 0.8,
+    });
+    if (result.canceled) return;
+    const localUri = result.assets[0].uri;
+    // Upload to storage (mock echoes the uri), then send with the returned url.
+    const url = await api.uploadChatImage(localUri);
+    await pushMessage({ imageUrl: url });
   };
 
   if (accessState === "blocked") {
@@ -101,10 +130,40 @@ export default function ChatThreadScreen() {
           <Ionicons name="chevron-back" size={24} color={colors.ink} />
         </Pressable>
         {thread ? (
-          <>
-            <Avatar uri={thread.counterpart.avatarUrl} size={36} />
-            <Text className="text-base font-bold text-ink ml-2">{thread.counterpart.name}</Text>
-          </>
+          thread.isGroup ? (
+            <>
+              {/* Stacked member avatars for the group. */}
+              <View className="flex-row ml-1" style={{ width: 52, height: 36 }}>
+                {(thread.members ?? []).slice(0, 3).map((u, i) => (
+                  <View
+                    key={u.id}
+                    style={{
+                      position: "absolute",
+                      left: i * 14,
+                      borderWidth: 1.5,
+                      borderColor: colors.surface,
+                      borderRadius: 18,
+                    }}
+                  >
+                    <Avatar uri={u.avatarUrl} size={32} />
+                  </View>
+                ))}
+              </View>
+              <View className="ml-2 flex-1">
+                <Text className="text-base font-bold text-ink" numberOfLines={1}>
+                  {thread.title ?? "Group chat"}
+                </Text>
+                <Text className="text-[11px] text-ink-muted">
+                  {(thread.members?.length ?? 0) + 1} members
+                </Text>
+              </View>
+            </>
+          ) : (
+            <>
+              <Avatar uri={thread.counterpart.avatarUrl} size={36} />
+              <Text className="text-base font-bold text-ink ml-2">{thread.counterpart.name}</Text>
+            </>
+          )
         ) : null}
       </View>
 
@@ -115,14 +174,51 @@ export default function ChatThreadScreen() {
         <ScrollView className="flex-1 px-4 py-3">
           {messages.map((m) => {
             const mine = m.fromUserId === myId;
+            const sender = thread?.isGroup && !mine ? senderById.get(m.fromUserId) : undefined;
             return (
               <View
                 key={m.id}
-                className={`max-w-[80%] mb-2 px-3 py-2 rounded-2xl ${
-                  mine ? "self-end bg-brand" : "self-start bg-surface-soft"
-                }`}
+                className={mine ? "self-end" : "self-start"}
+                style={{ maxWidth: "80%", marginBottom: 8, flexDirection: "row" }}
               >
-                <Text className={mine ? "text-white" : "text-ink"}>{m.text}</Text>
+                {sender ? (
+                  <View style={{ marginRight: 6, alignSelf: "flex-end" }}>
+                    <Avatar uri={sender.avatarUrl} size={24} />
+                  </View>
+                ) : null}
+                <View style={{ flexShrink: 1 }}>
+                  {sender ? (
+                    <Text className="text-[11px] text-ink-muted mb-0.5 ml-1">{sender.name}</Text>
+                  ) : null}
+                  {m.imageUrl ? (
+                    // Image message — rounded thumbnail, sized to the bubble
+                    // column. Any caption text renders below it.
+                    <View className={mine ? "self-end" : "self-start"}>
+                      <Image
+                        source={{ uri: m.imageUrl }}
+                        style={{ width: 200, height: 200, borderRadius: 14 }}
+                        contentFit="cover"
+                      />
+                      {m.text ? (
+                        <View
+                          className={`px-3 py-2 rounded-2xl mt-1 ${
+                            mine ? "bg-brand self-end" : "bg-surface-soft self-start"
+                          }`}
+                        >
+                          <Text className={mine ? "text-white" : "text-ink"}>{m.text}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  ) : (
+                    <View
+                      className={`px-3 py-2 rounded-2xl ${
+                        mine ? "bg-brand self-end" : "bg-surface-soft self-start"
+                      }`}
+                    >
+                      <Text className={mine ? "text-white" : "text-ink"}>{m.text}</Text>
+                    </View>
+                  )}
+                </View>
               </View>
             );
           })}
@@ -132,6 +228,13 @@ export default function ChatThreadScreen() {
           className="flex-row items-center px-3 pt-2 border-t border-ink-line"
           style={{ paddingBottom: bottomPad }}
         >
+          <Pressable
+            onPress={pickAndSendImage}
+            className="mr-2 w-11 h-11 rounded-full items-center justify-center"
+            hitSlop={4}
+          >
+            <Ionicons name="image-outline" size={24} color={colors.inkMuted} />
+          </Pressable>
           <View className="flex-1 bg-surface-soft rounded-full px-4 h-11 justify-center">
             <TextInput
               placeholder="Message"

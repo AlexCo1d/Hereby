@@ -9,27 +9,110 @@ import { Modal, View, Text, Pressable, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 import { colors } from "../../constants/theme";
-import { SKILL_LEVELS } from "../../services/types";
-import type { DiscoverFilter, PostFormat } from "../../services/types";
+import { SKILL_LEVELS, postKindMeta } from "../../services/types";
+import type { DiscoverFilter, PostFormat, PostKind } from "../../services/types";
+import { WheelPicker, WHEEL_ITEM_HEIGHT, WHEEL_VISIBLE_ROWS, type WheelItem } from "./WheelPicker";
 
 export type SeatsBucket = "any" | "solo" | "small" | "large";
 
 export type FacetFilter = {
+  /** Post-type facet (Offer Help / Need a Hand / Find a Buddy). */
+  kinds: PostKind[];
   formats: PostFormat[];
   skillLevels: number[];
   seats: SeatsBucket;
+  /** Time-window facet. When enabled, keep only posts overlapping [from, to]
+   *  on the selected day. dayOffset 0..6 from today; fromMin/toMin are minutes
+   *  from midnight. */
+  timeEnabled: boolean;
+  dayOffset: number;
+  fromMin: number;
+  toMin: number;
 };
 
-export const emptyFacets: FacetFilter = { formats: [], skillLevels: [], seats: "any" };
+export const emptyFacets: FacetFilter = {
+  kinds: [],
+  formats: [],
+  skillLevels: [],
+  seats: "any",
+  timeEnabled: false,
+  dayOffset: 0,
+  fromMin: 8 * 60, // 8:00 AM
+  toMin: 20 * 60, // 8:00 PM
+};
 
 /** Number of active facets — drives the little badge on the funnel button. */
 export function countFacets(f: FacetFilter): number {
-  return f.formats.length + f.skillLevels.length + (f.seats !== "any" ? 1 : 0);
+  return (
+    f.kinds.length +
+    f.formats.length +
+    f.skillLevels.length +
+    (f.seats !== "any" ? 1 : 0) +
+    (f.timeEnabled ? 1 : 0)
+  );
 }
+
+// ---- Time-wheel domain ----------------------------------------------------
+/** Earliest / latest selectable half-hour slot (6:00 AM … 10:00 PM). */
+const EARLIEST_MIN = 6 * 60; // 6:00 AM
+const LATEST_MIN = 22 * 60; // 10:00 PM cap
+
+function fmtClock(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  const ap = h < 12 ? "AM" : "PM";
+  const hh = h % 12 === 0 ? 12 : h % 12;
+  return `${hh}:${m === 0 ? "00" : m} ${ap}`;
+}
+
+function startOfToday(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function roundUpToSlot(min: number): number {
+  return Math.ceil(min / 30) * 30;
+}
+
+function nowMinutes(): number {
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+/** Earliest selectable "from" for a day. For today, start at the next
+ *  half-hour slot from now (never earlier than 6 AM, never past 10 PM). */
+function fromFloor(dayOffset: number): number {
+  if (dayOffset !== 0) return EARLIEST_MIN;
+  return Math.min(LATEST_MIN, Math.max(EARLIEST_MIN, roundUpToSlot(nowMinutes())));
+}
+
+/** Half-hour slots in [startMin, endMin]. value = minutes from midnight. */
+function buildSlots(startMin: number, endMin: number): WheelItem[] {
+  const out: WheelItem[] = [];
+  for (let m = startMin; m <= endMin; m += 30) out.push({ label: fmtClock(m), value: m });
+  if (out.length === 0) out.push({ label: fmtClock(endMin), value: endMin });
+  return out;
+}
+
+/** Next 7 days as wheel items (Today / Tomorrow / "09/07" MM/DD). */
+export const DAY_ITEMS: WheelItem[] = (() => {
+  const base = startOfToday();
+  const out: WheelItem[] = [];
+  for (let off = 0; off < 7; off++) {
+    const d = new Date(base + off * 86400000);
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const label = off === 0 ? "Today" : off === 1 ? "Tomorrow" : `${mm}/${dd}`;
+    out.push({ label, value: off });
+  }
+  return out;
+})();
 
 /** Translate the UI facets into the DiscoverFilter fields the api understands. */
 export function facetsToFilter(f: FacetFilter): Partial<DiscoverFilter> {
   const out: Partial<DiscoverFilter> = {};
+  if (f.kinds.length) out.kinds = f.kinds;
   if (f.formats.length) out.formats = f.formats;
   if (f.skillLevels.length) out.skillLevels = f.skillLevels;
   if (f.seats === "solo") out.maxSeats = 1;
@@ -37,8 +120,24 @@ export function facetsToFilter(f: FacetFilter): Partial<DiscoverFilter> {
     out.minSeats = 2;
     out.maxSeats = 6;
   } else if (f.seats === "large") out.minSeats = 7;
+  if (f.timeEnabled) {
+    const dayStart = startOfToday() + f.dayOffset * 86400000;
+    const to = f.toMin > f.fromMin ? f.toMin : Math.min(LATEST_MIN, f.fromMin + 30);
+    out.windowStart = new Date(dayStart + f.fromMin * 60000).toISOString();
+    out.windowEnd = new Date(dayStart + to * 60000).toISOString();
+  }
   return out;
 }
+
+// Post-type options. The filter uses its own friendlier, emoji-led labels
+// (the composer/cards use postKindMeta's "Offering"/"Looking for"/… wording),
+// but the accent colour is shared via postKindMeta so a chip lights up in the
+// same hue the card tint / badge uses.
+const KIND_OPTIONS: { value: PostKind; label: string }[] = [
+  { value: "offer", label: "🙋 Offer Help" },
+  { value: "seek", label: "🆘 Need a Hand" },
+  { value: "partner", label: "🤝 Find a Buddy" },
+];
 
 const FORMAT_LABELS: Record<PostFormat, { label: string; icon: keyof typeof Ionicons.glyphMap }> = {
   one_on_one: { label: "One-on-one", icon: "person-outline" },
@@ -112,15 +211,86 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+/** The three synchronised wheels (day / from / to) with a single centre
+ *  highlight band drawn across all of them. */
+function TimeWheels({
+  draft,
+  fromItems,
+  toItems,
+  fromIdx,
+  toIdx,
+  setDay,
+  setFrom,
+  setTo,
+}: {
+  draft: FacetFilter;
+  fromItems: WheelItem[];
+  toItems: WheelItem[];
+  fromIdx: number;
+  toIdx: number;
+  setDay: (i: number) => void;
+  setFrom: (i: number) => void;
+  setTo: (i: number) => void;
+}) {
+  const wheelHeight = WHEEL_ITEM_HEIGHT * WHEEL_VISIBLE_ROWS;
+  const bandTop = Math.floor(WHEEL_VISIBLE_ROWS / 2) * WHEEL_ITEM_HEIGHT;
+  const dayIdx = Math.max(0, DAY_ITEMS.findIndex((d) => d.value === draft.dayOffset));
+
+  return (
+    <View style={{ marginTop: 18 }}>
+      <View style={{ flexDirection: "row", justifyContent: "space-around", marginBottom: 4 }}>
+        {["Day", "From", "To"].map((t) => (
+          <Text key={t} style={{ fontSize: 12, fontWeight: "700", color: colors.inkMuted, letterSpacing: 0.3 }}>
+            {t.toUpperCase()}
+          </Text>
+        ))}
+      </View>
+      <View style={{ height: wheelHeight }}>
+        {/* Centre highlight band, shared by all three wheels. */}
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            top: bandTop,
+            height: WHEEL_ITEM_HEIGHT,
+            borderTopWidth: 1,
+            borderBottomWidth: 1,
+            borderColor: colors.line,
+            backgroundColor: colors.brandSoft,
+            borderRadius: 8,
+          }}
+        />
+        <View style={{ flexDirection: "row", justifyContent: "space-around" }}>
+          <WheelPicker items={DAY_ITEMS} selectedIndex={dayIdx} onChange={setDay} width={110} />
+          <WheelPicker items={fromItems} selectedIndex={fromIdx} onChange={setFrom} width={100} />
+          <WheelPicker items={toItems} selectedIndex={toIdx} onChange={setTo} width={100} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
 export function FilterSheet({ visible, value, onApply, onClose, formatOptions }: Props) {
   const [draft, setDraft] = useState<FacetFilter>(value);
-  // Re-sync when opened so the sheet reflects the committed state.
+  // Re-sync when opened so the sheet reflects the committed state, clamping the
+  // window into the current valid range (today can't start in the past; 10 PM cap).
   useEffect(() => {
-    if (visible) setDraft(value);
+    if (!visible) return;
+    const floor = fromFloor(value.dayOffset);
+    const fromMin = Math.max(floor, Math.min(LATEST_MIN, value.fromMin));
+    const toMin = Math.max(fromMin, Math.min(LATEST_MIN, value.toMin));
+    setDraft({ ...value, fromMin, toMin });
   }, [visible]);
 
   const formats = formatOptions ?? (["one_on_one", "activity", "event"] as PostFormat[]);
 
+  const toggleKind = (k: PostKind) =>
+    setDraft((d) => ({
+      ...d,
+      kinds: d.kinds.includes(k) ? d.kinds.filter((x) => x !== k) : [...d.kinds, k],
+    }));
   const toggleFormat = (f: PostFormat) =>
     setDraft((d) => ({
       ...d,
@@ -134,6 +304,28 @@ export function FilterSheet({ visible, value, onApply, onClose, formatOptions }:
         : [...d.skillLevels, l],
     }));
   const setSeats = (s: SeatsBucket) => setDraft((d) => ({ ...d, seats: s }));
+
+  // From starts at today's "now" floor (or 6 AM on later days); To starts at From.
+  const fromItems = buildSlots(fromFloor(draft.dayOffset), LATEST_MIN);
+  const toItems = buildSlots(draft.fromMin, LATEST_MIN);
+  const fromIdx = Math.max(0, fromItems.findIndex((t) => t.value === draft.fromMin));
+  const toIdx = Math.max(0, toItems.findIndex((t) => t.value === draft.toMin));
+  const setFrom = (i: number) =>
+    setDraft((d) => {
+      const fromMin = fromItems[i].value;
+      // Keep "to" at or after "from" so the window stays valid.
+      const toMin = d.toMin >= fromMin ? d.toMin : Math.min(LATEST_MIN, fromMin + 30);
+      return { ...d, fromMin, toMin };
+    });
+  const setTo = (i: number) => setDraft((d) => ({ ...d, toMin: toItems[i].value }));
+  const setDay = (i: number) =>
+    setDraft((d) => {
+      const dayOffset = DAY_ITEMS[i].value;
+      const floor = fromFloor(dayOffset);
+      const fromMin = Math.max(floor, Math.min(LATEST_MIN, d.fromMin));
+      const toMin = Math.max(fromMin, Math.min(LATEST_MIN, d.toMin));
+      return { ...d, dayOffset, fromMin, toMin };
+    });
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -160,6 +352,18 @@ export function FilterSheet({ visible, value, onApply, onClose, formatOptions }:
         </View>
 
         <ScrollView style={{ maxHeight: 420 }} showsVerticalScrollIndicator={false}>
+          <Section title="Post type">
+            {KIND_OPTIONS.map((o) => (
+              <Chip
+                key={o.value}
+                label={o.label}
+                active={draft.kinds.includes(o.value)}
+                activeColor={postKindMeta(o.value).color}
+                onPress={() => toggleKind(o.value)}
+              />
+            ))}
+          </Section>
+
           <Section title="Type">
             {formats.map((f) => (
               <Chip
@@ -194,6 +398,34 @@ export function FilterSheet({ visible, value, onApply, onClose, formatOptions }:
               />
             ))}
           </Section>
+
+          <Section title="Time">
+            <Chip
+              label="Any time"
+              icon="time-outline"
+              active={!draft.timeEnabled}
+              onPress={() => setDraft((d) => ({ ...d, timeEnabled: false }))}
+            />
+            <Chip
+              label="Pick a window"
+              icon="calendar-outline"
+              active={draft.timeEnabled}
+              onPress={() => setDraft((d) => ({ ...d, timeEnabled: true }))}
+            />
+          </Section>
+
+          {draft.timeEnabled ? (
+            <TimeWheels
+              draft={draft}
+              fromItems={fromItems}
+              toItems={toItems}
+              fromIdx={fromIdx}
+              toIdx={toIdx}
+              setDay={setDay}
+              setFrom={setFrom}
+              setTo={setTo}
+            />
+          ) : null}
         </ScrollView>
 
         {/* Footer actions */}
@@ -240,7 +472,7 @@ export function FilterButton({ count, onPress }: { count: number; onPress: () =>
         backgroundColor: count > 0 ? colors.brand : colors.surfaceSoft,
       }}
     >
-      <Ionicons name="options-outline" size={20} color={count > 0 ? "white" : colors.ink} />
+      <Ionicons name="funnel-outline" size={18} color={count > 0 ? "white" : colors.ink} />
       {count > 0 ? (
         <View
           style={{
